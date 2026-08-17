@@ -69,9 +69,10 @@ function bindingToSlug(binding: string): ChatRoleSlug {
 }
 
 function labelToolCall(name: unknown, args: Record<string, unknown>): DesktopChatToolActivity {
-  const toolName = typeof name === "string" ? name : "tool";
-  const pathArg = typeof args.path === "string" && args.path.trim() ? args.path : undefined;
-  const queryArg = typeof args.query === "string" && args.query.trim() ? args.query : undefined;
+  // Contract caps: tool name <= 64 chars, label <= 300 chars (contracts.ts validateChatTool).
+  const toolName = (typeof name === "string" ? name : "tool").slice(0, 64);
+  const pathArg = typeof args.path === "string" && args.path.trim() ? args.path.slice(0, 280) : undefined;
+  const queryArg = typeof args.query === "string" && args.query.trim() ? args.query.slice(0, 280) : undefined;
   let label = toolName;
   if (toolName === "read_file") label = `read ${pathArg ?? "file"}`;
   else if (toolName === "list_files") label = `list ${pathArg ?? "."}`;

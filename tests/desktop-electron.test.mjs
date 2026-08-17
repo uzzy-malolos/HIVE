@@ -1048,6 +1048,39 @@ test("coder.handoff creates a thread, appends the brief, and starts a run", asyn
   await rm(root, { recursive: true, force: true }); await rm(appData, { recursive: true, force: true });
 });
 
+test("coder.handoff clamps a long assistant answer so the brief fits the thread message cap", async () => {
+  const root = await temporaryDirectory("hive-handoff-long-");
+  const appData = await temporaryDirectory("hive-handoff-long-state-");
+  const dispatched = [];
+  const threads = [];
+  const threadStore = {
+    async list() { return threads; },
+    async create(input) { const thread = { schemaVersion: 1, id: input.id ?? `thread-${threads.length + 1}`, title: input.title, createdAt: now, updatedAt: now, archived: false, messages: [], runs: [] }; threads.push(thread); return thread; },
+    async load(id) { return threads.find((thread) => thread.id === id) ?? null; },
+    async save(thread) { return thread; },
+    async appendMessage(id, message) { const thread = threads.find((entry) => entry.id === id); thread.messages.push(message); return thread; },
+    async mutate() { throw new Error("unused"); },
+    async archive() { throw new Error("unused"); },
+  };
+  const longAnswer = `Plan. ${"x".repeat(23_000)}`;
+  const router = new DesktopCommandRouter({
+    stateStore: new JsonDesktopAppStateStore(appData, { clock: () => now }),
+    credentialVault: { async list() { return []; }, async metadata() { return null; }, async set() {}, async replace() {}, async remove() {}, async test() {} },
+    workerSupervisor: { async dispatchAndWait(rootArg, command) { dispatched.push(command); }, async reconcileRepositoryRuns() {}, hasActiveRuns() { return false; }, hasActiveRepository() { return false; } },
+    guardedGitFactory: () => { throw new Error("unused"); },
+    threadStoreFactory: () => threadStore,
+    chatService: { async load() { return { id: "chat-1789200000000-ab12", cwd: root, role: "auto", ground: false, createdAt: now, updatedAt: now, messages: [ { id: "msg-0", role: "user", content: "q", at: now }, { id: "msg-1", role: "assistant", content: longAnswer, at: now } ] }; } },
+    clock: () => now,
+  });
+  await router.handle({ requestId: "open", type: "repository.open", repositoryRoot: root });
+  const event = await router.handle({ requestId: "r-11", type: "coder.handoff", input: { conversationId: "chat-1789200000000-ab12", sourceMessageId: "msg-1" } });
+  assert.equal(event.type, "coder.handoff.started");
+  assert.equal(dispatched.length, 1);
+  assert.ok(threads[0].messages[0].content.length <= 20_000, `brief clamped to the 20,000-char thread cap, got ${threads[0].messages[0].content.length}`);
+  assert.equal(threads[0].messages[0].content.startsWith("Implement the following plan produced by HiveBot in HiveChat:"), true);
+  await rm(root, { recursive: true, force: true }); await rm(appData, { recursive: true, force: true });
+});
+
 test("coder.handoff refuses when a repository run is already active", async () => {
   const root = await temporaryDirectory("hive-handoff-busy-");
   const appData = await temporaryDirectory("hive-handoff-busy-state-");

@@ -5,7 +5,7 @@ import { JsonThreadStore } from "../thread-store.js";
 import { DesktopChatService, type DesktopChatServiceOptions } from "../chat-service.js";
 import { DesktopCouncilService, type DesktopCouncilServiceOptions } from "../council-service.js";
 import type { DesktopCredentialVaultService } from "../credential-vault.js";
-import type { DesktopCommand, DesktopEvent, DesktopProviderMetadata, GuardedGitService, ThreadStore } from "../types.js";
+import { MAX_THREAD_MESSAGE_CHARS, type DesktopCommand, type DesktopEvent, type DesktopProviderMetadata, type GuardedGitService, type ThreadStore } from "../types.js";
 import { validateDesktopCommand, validateDesktopEvent } from "./contracts.js";
 import { assertTrustedExecutablePath, DesktopExternalToolService, SystemTrustedExecutableResolver, type TrustedExecutableResolver } from "./external-tools.js";
 import type { JsonDesktopAppStateStore } from "./app-state.js";
@@ -190,7 +190,8 @@ export class DesktopCommandRouter {
           if (!objective) throw new Error("Handoff objective is empty.");
           const title = objective.replace(/\s+/g, " ").slice(0, 80);
           const thread = await this.#threads().create({ title: `HiveBot: ${title}` });
-          const brief = `Implement the following plan produced by HiveBot in HiveChat:\n\n${objective}`;
+          const briefPrefix = "Implement the following plan produced by HiveBot in HiveChat:\n\n";
+          const brief = `${briefPrefix}${objective.slice(0, MAX_THREAD_MESSAGE_CHARS - briefPrefix.length)}`;
           const userMessageId = `message-${Date.now().toString(36)}`;
           await this.#threads().appendMessage(thread.id, { id: userMessageId, role: "user", content: brief, createdAt: timestamp });
           const dispatch = this.options.workerSupervisor.dispatchAndWait.bind(this.options.workerSupervisor);

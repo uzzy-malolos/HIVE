@@ -255,3 +255,24 @@ test("send with agent:true emits tool events then a completed message with recei
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test("agent tool labels are clamped to the contract cap so long paths do not fail the turn", async () => {
+  const longPath = `src/${"a".repeat(500)}.ts`;
+  const { root, events, service } = await fixture({}, {
+    runAgentTurn: async (input, hooks) => {
+      hooks.onEvent?.({ type: "subagent.tool_call", subagentId: "chat-1", payload: { callId: "c1", name: "read_file", arguments: { path: longPath } } });
+      return { output: "done", receipt: { role: "coding", providerId: "stub-provider", model: "stub-model", degraded: false, totalTokens: 5 }, turns: 1, toolCalls: 1 };
+    },
+  });
+  try {
+    const conversation = await service.create({});
+    await service.send({ conversationId: conversation.id, content: "read a long path", agent: true });
+    await until(() => events.some((event) => event.type === "chat.completed"), "chat.completed");
+    const tool = events.find((event) => event.type === "chat.tool");
+    assert.ok(tool, "chat.tool event emitted despite the long path");
+    assert.ok(tool.tool.label.length <= 300, `label clamped to 300 chars, got ${tool.tool.label.length}`);
+    assert.ok(tool.tool.name.length <= 64, "tool name within the 64-char cap");
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
