@@ -551,6 +551,61 @@ describe("HIVE desktop cockpit", () => {
     expect(await screen.findByRole("button", { name: /Desktop companion/i })).toBeInTheDocument();
     expect(document.querySelector(".welcome-title")).not.toBeInTheDocument();
   });
+
+  it("hivebot agent turn streams tool activity and hands off to hive code", async () => {
+    localStorage.clear();
+    const conversationId = "chat-1789200000000-ab12";
+    const api = bridge({
+      request: async (command) => {
+        if (command.type === "chat.list") return { type: "chat.listed", timestamp: now, conversations: [] };
+        if (command.type === "chat.create") {
+          return { type: "chat.changed", timestamp: now, conversation: { id: conversationId, cwd: "C:\\HIVE", role: "auto", ground: false, createdAt: now, updatedAt: now, messages: [] } };
+        }
+        if (command.type === "chat.send") {
+          expect(command.input.agent).toBe(true);
+          return { type: "request.completed", timestamp: now, requestId: command.requestId };
+        }
+        if (command.type === "coder.handoff") {
+          return { type: "coder.handoff.started", timestamp: now, conversationId, threadId: "thread-handoff-1", userMessageId: "message-h1" };
+        }
+        return eventFor(command);
+      },
+    });
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    await user.click(await screen.findByRole("button", { name: /C:\\HIVE/i }));
+    await screen.findByRole("button", { name: /Desktop companion/i });
+    await user.click(screen.getByRole("tab", { name: /^hivebot$/i }));
+
+    // Create a conversation, enable agentic mode, and send.
+    await user.click(screen.getByRole("button", { name: /new chat/i }));
+    await user.type(screen.getByLabelText(/message HIVE/i), "Read the readme");
+    await user.click(screen.getByRole("button", { name: /toggle agentic mode/i }));
+    await user.click(screen.getByRole("button", { name: /send message/i }));
+
+    // Tool events render a live strip before the summary lands.
+    api.emit({ type: "chat.started", timestamp: now, conversationId, turnId: "turn-agent-1" });
+    api.emit({ type: "chat.tool", timestamp: now, conversationId, turnId: "turn-agent-1", seq: 0, tool: { name: "read_file", label: "read README.md" } });
+    expect(await screen.findByText("[read README.md]")).toBeInTheDocument();
+    api.emit({
+      type: "chat.changed", timestamp: now,
+      conversation: {
+        id: conversationId, cwd: "C:\\HIVE", role: "auto", ground: false, createdAt: now, updatedAt: now,
+        messages: [
+          { id: "msg-0", role: "user", content: "Read the readme", at: now },
+          { id: "msg-1", role: "assistant", content: "The readme describes HIVE.", at: now, receipt: { role: "coding", providerId: "ollama", model: "qwen3", source: "role-assignment", degraded: false, totalTokens: 30, latencyMs: 900 } },
+        ],
+      },
+    });
+    api.emit({ type: "chat.completed", timestamp: now, conversationId, turnId: "turn-agent-1", message: { id: "msg-1", role: "assistant", content: "The readme describes HIVE.", at: now, receipt: { role: "coding", providerId: "ollama", model: "qwen3", source: "role-assignment", degraded: false, totalTokens: 30, latencyMs: 900 } } });
+    expect(await screen.findByText(/The readme describes HIVE\./)).toBeInTheDocument();
+
+    // Handoff: confirm in the dialog, then land in Hive Code mode.
+    await user.click(screen.getByRole("button", { name: /send to hive code/i }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: /send to hive code/i }));
+    expect(await screen.findByRole("tab", { name: /^hive code$/i })).toHaveAttribute("aria-selected", "true");
+  });
 });
 
 function contrast(foreground: string, background: string): number {

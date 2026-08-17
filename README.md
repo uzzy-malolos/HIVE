@@ -189,6 +189,8 @@ The Windows 10/11 x64 desktop companion ships two top-level surfaces behind one 
 - **Sessions**: conversations persist per repository under `.hivemind/chat-sessions/` with a filterable rail, derived titles, and archiving.
 - **Opt-in Scout grounding**: prepend a bounded repo context pack to any turn (`[/ground]`).
 - **Council mode**: `[/council]` routes a task through the six-role hivebot council with a progressive stage transcript, per-stage receipts, a summary card, and an "open artifacts folder" action.
+- **Agentic mode**: `[/agent]` lets HiveBot ground answers with read-only repository tools (read/list/search) and streams a live tool-activity feed — no writes ever happen here.
+- **Send to Hive Code**: any assistant answer can be handed to Hive Code as a verified, isolated, approve-before-commit run in one confirmed click.
 
 **Hive Code** is the verified harness cockpit (unchanged in function, now poppable into its own OS window):
 
@@ -197,7 +199,7 @@ The Windows 10/11 x64 desktop companion ships two top-level surfaces behind one 
 - **Command Palette & Keyboard Shortcuts**: Instant command palette (`Ctrl+K`), mode switching (`Ctrl+Shift+1/2`), tab switching (`Ctrl+1/2/3`), quick composer submission (`Ctrl+Enter`), shortcut help (`?`), and collapsible navigation rails (`[/]` and `[\]`).
 - **Two-Pane Diff Inspector**: Sticky file navigation rail with `+added / -removed` line statistics, per-file accordion collapse, safe truncation handling, and line wrapping toggle.
 - **Rich Message Rendering**: Hand-rolled, zero-dependency, XSS-safe Markdown parser supporting fenced code blocks with 1-click clipboard copy, task checkboxes, headers, and forward-compatible token receipts.
-- **Pop-out window**: the topbar `[^]` button opens (or focuses) a dedicated Coder OS window; every window keeps receiving all events, and a single Coder window is enforced for the one-active-run invariant. `?view=chat|coder` seeds a window's initial surface.
+- **Pop-out window**: the topbar `[^]` button opens (or focuses) a dedicated Hive Code OS window; every window keeps receiving all events, and a single Hive Code window is enforced for the one-active-run invariant. `?view=chat|coder` seeds a window's initial surface.
 - **Background Presence & Notifications**: HTML5 system notification integration notifying on turn completion when the application window is inactive.
 - **Preferences & Accessibility**: Layout density options (Comfortable / Compact), color accents (Vivid Violet / High Contrast), full WCAG AA contrast compliance, keyboard focus rings, and automatic reduced-motion integration.
 

@@ -130,8 +130,8 @@ export function TopBar({
           <button
             type="button"
             className="topbar-btn secondary"
-            aria-label="Pop the coder cockpit out into its own window"
-            title="Pop out Coder window [^]"
+            aria-label="Pop the Hive Code cockpit out into its own window"
+            title="Pop out Hive Code window [^]"
             onClick={onPopOut}
           >
             [^]

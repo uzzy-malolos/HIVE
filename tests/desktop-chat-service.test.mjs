@@ -234,20 +234,24 @@ test("a second send while streaming rejects instead of interleaving turns", asyn
 });
 
 test("send with agent:true emits tool events then a completed message with receipt", async () => {
-  const { events, service } = await fixture({}, {
+  const { root, events, service } = await fixture({}, {
     runAgentTurn: async (input, hooks) => {
       hooks.onEvent?.({ type: "subagent.tool_call", subagentId: "chat-1", payload: { callId: "c1", name: "read_file", arguments: { path: "src/foo.ts" } } });
       return { output: "I read the file.", receipt: { role: "coding", providerId: "stub-provider", model: "stub-model", degraded: false, totalTokens: 10 }, turns: 2, toolCalls: 1 };
     },
   });
-  const conversation = await service.create({});
-  await service.send({ conversationId: conversation.id, content: "read foo", agent: true });
-  await until(() => events.some((event) => event.type === "chat.completed"), "chat.completed");
+  try {
+    const conversation = await service.create({});
+    await service.send({ conversationId: conversation.id, content: "read foo", agent: true });
+    await until(() => events.some((event) => event.type === "chat.completed"), "chat.completed");
 
-  const tool = events.find((event) => event.type === "chat.tool");
-  assert.equal(tool.tool.name, "read_file");
-  assert.equal(tool.tool.label, "read src/foo.ts");
-  const completed = events.find((event) => event.type === "chat.completed");
-  assert.equal(completed.message.content, "I read the file.");
-  assert.equal(completed.message.receipt.totalTokens, 10);
+    const tool = events.find((event) => event.type === "chat.tool");
+    assert.equal(tool.tool.name, "read_file");
+    assert.equal(tool.tool.label, "read src/foo.ts");
+    const completed = events.find((event) => event.type === "chat.completed");
+    assert.equal(completed.message.content, "I read the file.");
+    assert.equal(completed.message.receipt.totalTokens, 10);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });

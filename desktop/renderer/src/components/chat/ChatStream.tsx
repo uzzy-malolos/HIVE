@@ -32,7 +32,7 @@ export function ChatStream({ conversation, streaming, route, councilRun, reposit
     if (!element) return;
     const nearBottom = element.scrollHeight - element.scrollTop - element.clientHeight < NEAR_BOTTOM_PX;
     if (nearBottom) element.scrollTop = element.scrollHeight;
-  }, [conversation.messages, streaming?.text, councilRun?.stages.length, councilRun?.summary]);
+  }, [conversation.messages, streaming?.text, streaming?.tools?.length, councilRun?.stages.length, councilRun?.summary]);
 
   return (
     <ol className="chat-messages" role="log" aria-live="polite" aria-label="Conversation messages" ref={scrollRef}>
