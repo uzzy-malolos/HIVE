@@ -76,6 +76,21 @@ export class ShellWindowRegistry {
     }
   }
 
+  /** Focuses and brings the first available live window to the foreground. */
+  public focusFirst(): void {
+    for (const window of this.#windows.values()) {
+      if (!window.isDestroyed()) {
+        const anyWin = window as unknown as { isMinimized?: () => boolean; restore?: () => void };
+        if (typeof anyWin.isMinimized === "function" && anyWin.isMinimized()) {
+          anyWin.restore?.();
+        }
+        window.show();
+        window.focus();
+        return;
+      }
+    }
+  }
+
   #publishViews(): void {
     const views = this.views();
     if (!views.length) return;

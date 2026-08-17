@@ -145,13 +145,35 @@ async function start(): Promise<void> {
       title: view === "coder" ? "Hive Code" : "HiveBot",
       webPreferences: { ...DESKTOP_BROWSER_WEB_PREFERENCES, preload: preloadFile },
     });
+    const showSafetyTimer = setTimeout(() => {
+      if (!window.isDestroyed() && !window.isVisible()) {
+        window.show();
+        window.focus();
+      }
+    }, 2500);
+
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     window.webContents.on("will-navigate", (event) => event.preventDefault());
     window.webContents.on("will-attach-webview", (event) => event.preventDefault());
     window.webContents.once("did-finish-load", () => {
+      clearTimeout(showSafetyTimer);
+      if (!window.isDestroyed() && !window.isVisible()) {
+        window.show();
+        window.focus();
+      }
       for (const failure of startupFailures) window.webContents.send(DESKTOP_EVENT_CHANNEL, { type: "worker.failed", timestamp: new Date().toISOString(), message: `Startup reconciliation failed: ${failure}`, recoverable: false });
     });
-    window.once("ready-to-show", () => window.show());
+    window.once("ready-to-show", () => {
+      clearTimeout(showSafetyTimer);
+      if (!window.isDestroyed() && !window.isVisible()) {
+        window.show();
+        window.focus();
+      }
+    });
+    window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
+      clearTimeout(showSafetyTimer);
+      dialog.showErrorBox("HIVE UI Failed to Load", `Failed to load ${validatedURL}\nError: ${errorDescription} (${errorCode})`);
+    });
     window.on("close", (event) => {
       if (quitting || !workerSupervisor.hasActiveRuns()) return;
       event.preventDefault();
@@ -202,5 +224,13 @@ async function start(): Promise<void> {
   shellWindows.open("chat");
 }
 
-app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
-app.whenReady().then(start).catch((error) => { dialog.showErrorBox("HIVE desktop failed to start", error instanceof Error ? error.message : String(error)); app.exit(1); });
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    shellWindows?.focusFirst();
+  });
+  app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
+  app.whenReady().then(start).catch((error) => { dialog.showErrorBox("HIVE desktop failed to start", error instanceof Error ? error.message : String(error)); app.exit(1); });
+}

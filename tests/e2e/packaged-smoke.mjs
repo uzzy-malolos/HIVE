@@ -46,7 +46,7 @@ try {
   page.on("console", (message) => { if (message.type() === "error") rendererErrors.push(message.text()); });
   await page.waitForLoadState("domcontentloaded");
   if ((await page.title()) !== "HIVE Desktop") throw new Error(`Unexpected packaged title: ${await page.title()}`);
-  const coderTab = page.getByRole("tab", { name: /coder/i });
+  const coderTab = page.getByRole("tab", { name: /hive code|coder/i });
   if (await coderTab.isVisible().catch(() => false)) {
     await coderTab.click();
   }
