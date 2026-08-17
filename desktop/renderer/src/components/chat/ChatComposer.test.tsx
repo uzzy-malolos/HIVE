@@ -43,6 +43,8 @@ function harness(overrides: Partial<Parameters<typeof ChatComposer>[0]> = {}): H
     onRoleChange: vi.fn(),
     ground: false,
     onGroundChange: vi.fn(),
+    agent: false,
+    onAgentChange: vi.fn(),
     council: false,
     onCouncilChange: vi.fn(),
     councilPreset: "standard",
@@ -113,6 +115,13 @@ describe("ChatComposer", () => {
     await second.user.click(second.view.getByRole("button", { name: /stop/i }));
     expect(second.base.onStop).toHaveBeenCalledTimes(1);
     expect(second.view.queryByRole("button", { name: /^send$/i })).not.toBeInTheDocument();
+  });
+
+  it("toggles agentic mode via the [/agent] chip", async () => {
+    const onAgentChange = vi.fn();
+    const { user, view } = harness({ agent: false, onAgentChange });
+    await user.click(view.getByRole("button", { name: /toggle agentic mode/i }));
+    expect(onAgentChange).toHaveBeenCalledWith(true);
   });
 
   it("selects a provider override and clears back to the role default", async () => {

@@ -25,6 +25,12 @@ export interface ChatRouteInfo {
   degraded: boolean;
 }
 
+/** One HiveBot agentic tool activity for the live strip. */
+export interface ToolActivity {
+  name: string;
+  label: string;
+}
+
 /** One council (hivebot) stage event rendered inside a conversation. */
 export interface CouncilStage {
   type: "stage-started" | "stage-completed";
@@ -48,7 +54,7 @@ export interface DesktopChatState {
   activeId: string | null;
   active: DesktopChatConversation | null;
   /** In-flight assistant text per conversation; chunks append only when turnId matches. */
-  streaming: Record<string, { turnId: string; text: string } | undefined>;
+  streaming: Record<string, { turnId: string; text: string; tools: ToolActivity[] } | undefined>;
   routes: Record<string, ChatRouteInfo>;
   councilByConv: Record<string, CouncilRunView>;
   /** Last failed turn, so the composer can restore the sent draft. */
@@ -179,11 +185,16 @@ export function reduceDesktopEvent(state: DesktopViewState, event: DesktopEvent 
     case "credential.listed": return state;
     case "chat.listed": return { ...state, chat: { ...state.chat, conversations: event.conversations }, error: null };
     case "chat.changed": return { ...state, chat: { ...state.chat, active: event.conversation, activeId: event.conversation.id }, error: null };
-    case "chat.started": return { ...state, chat: { ...state.chat, streaming: { ...state.chat.streaming, [event.conversationId]: { turnId: event.turnId, text: "" } }, lastFailed: null }, error: null };
+    case "chat.started": return { ...state, chat: { ...state.chat, streaming: { ...state.chat.streaming, [event.conversationId]: { turnId: event.turnId, text: "", tools: [] } }, lastFailed: null }, error: null };
     case "chat.chunk": {
       const stream = state.chat.streaming[event.conversationId];
       if (!stream || stream.turnId !== event.turnId) return state;
       return { ...state, chat: { ...state.chat, streaming: { ...state.chat.streaming, [event.conversationId]: { ...stream, text: stream.text + event.chunk } } } };
+    }
+    case "chat.tool": {
+      const stream = state.chat.streaming[event.conversationId];
+      if (!stream || stream.turnId !== event.turnId) return state;
+      return { ...state, chat: { ...state.chat, streaming: { ...state.chat.streaming, [event.conversationId]: { ...stream, tools: [...stream.tools, event.tool] } } } };
     }
     case "chat.completed": {
       const { [event.conversationId]: _cleared, ...streaming } = state.chat.streaming;
@@ -194,6 +205,7 @@ export function reduceDesktopEvent(state: DesktopViewState, event: DesktopEvent 
       return { ...state, chat: { ...state.chat, streaming, lastFailed: { conversationId: event.conversationId, turnId: event.turnId, message: event.message } }, error: event.message };
     }
     case "chat.route.resolved": return { ...state, chat: { ...state.chat, routes: { ...state.chat.routes, [event.role]: { providerId: event.providerId, model: event.model, source: event.source, degraded: event.degraded } } } };
+    case "coder.handoff.started": return state;
     case "council.started": {
       const conversationId = state.chat.activeId;
       if (!conversationId) return state;

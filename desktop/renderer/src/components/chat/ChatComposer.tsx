@@ -19,6 +19,8 @@ export interface ChatComposerProps {
   onRoleChange: (role: string) => void;
   ground: boolean;
   onGroundChange: (ground: boolean) => void;
+  agent: boolean;
+  onAgentChange: (agent: boolean) => void;
   council: boolean;
   onCouncilChange: (council: boolean) => void;
   councilPreset: string;
@@ -44,6 +46,8 @@ export function ChatComposer(props: ChatComposerProps) {
     onRoleChange,
     ground,
     onGroundChange,
+    agent,
+    onAgentChange,
     council,
     onCouncilChange,
     councilPreset,
@@ -109,6 +113,16 @@ export function ChatComposer(props: ChatComposerProps) {
           onClick={() => onGroundChange(!ground)}
         >
           [/ground{ground ? ": on" : ""}]
+        </button>
+        <button
+          type="button"
+          className={`composer-chip toggle${agent ? " on" : ""}`}
+          aria-pressed={agent}
+          aria-label="Toggle agentic mode"
+          title="Let HiveBot ground answers with read-only repository tools"
+          onClick={() => onAgentChange(!agent)}
+        >
+          [/agent{agent ? ": on" : ""}]
         </button>
         <div className="chip-popover">
           <button

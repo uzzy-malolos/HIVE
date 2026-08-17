@@ -29,7 +29,7 @@ describe("ModeSwitch", () => {
     state = reduceDesktopEvent(state, { type: "chat.started", timestamp: now, conversationId, turnId: "turn-a-1" });
     state = reduceDesktopEvent(state, { type: "chat.chunk", timestamp: now, conversationId, turnId: "turn-a-1", chunk: "Hello ", seq: 0 });
     state = reduceDesktopEvent(state, { type: "chat.chunk", timestamp: now, conversationId, turnId: "turn-stale-9", chunk: "IGNORE", seq: 1 });
-    expect(state.chat.streaming[conversationId]).toEqual({ turnId: "turn-a-1", text: "Hello " });
+    expect(state.chat.streaming[conversationId]).toEqual({ turnId: "turn-a-1", text: "Hello ", tools: [] });
 
     state = reduceDesktopEvent(state, { type: "chat.completed", timestamp: now, conversationId, turnId: "turn-a-1", message: { id: "msg-1", role: "assistant", content: "Hello HIVE", at: now } });
     expect(state.chat.streaming[conversationId]).toBeUndefined();
@@ -38,6 +38,14 @@ describe("ModeSwitch", () => {
     state = reduceDesktopEvent(state, { type: "chat.failed", timestamp: now, conversationId, turnId: "turn-b-1", message: "Cancelled.", recoverable: true });
     expect(state.chat.streaming[conversationId]).toBeUndefined();
     expect(state.error).toBe("Cancelled.");
+  });
+
+  it("chat.tool appends tool activity only for the matching turn", () => {
+    let state = initialDesktopState();
+    state = reduceDesktopEvent(state, { type: "chat.started", timestamp: now, conversationId, turnId: "turn-a-1" });
+    state = reduceDesktopEvent(state, { type: "chat.tool", timestamp: now, conversationId, turnId: "turn-a-1", seq: 0, tool: { name: "read_file", label: "read src/foo.ts" } });
+    state = reduceDesktopEvent(state, { type: "chat.tool", timestamp: now, conversationId, turnId: "turn-stale-9", seq: 0, tool: { name: "read_file", label: "IGNORE" } });
+    expect(state.chat.streaming[conversationId]?.tools).toEqual([{ name: "read_file", label: "read src/foo.ts" }]);
   });
 
   it("repository switches reset the chat slice", () => {

@@ -50,6 +50,21 @@ describe("ChatStream", () => {
     expect(screen.getByText("Hello world")).toBeInTheDocument();
   });
 
+  it("renders the live tool-activity strip while an agent turn streams", () => {
+    render(
+      <ChatStream
+        conversation={conversation}
+        streaming={{ turnId: "turn-a-1", text: "", tools: [{ name: "read_file", label: "read src/foo.ts" }] }}
+        disabled
+        onRetry={() => {}}
+        repositoryRoot="C:\HIVE"
+        onOpenArtifacts={() => {}}
+      />,
+    );
+    expect(screen.getByLabelText(/hivebot tool activity/i)).toBeInTheDocument();
+    expect(screen.getByText("[read src/foo.ts]")).toBeInTheDocument();
+  });
+
   it("copy and retry actions route through the clipboard and the resend handler", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, writable: true, configurable: true });

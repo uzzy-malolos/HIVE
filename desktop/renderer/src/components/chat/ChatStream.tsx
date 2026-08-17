@@ -1,14 +1,14 @@
 import { useEffect, useRef } from "react";
 import type { DesktopChatConversation } from "../../../../../src/desktop/types";
 import { renderMarkdown } from "../../markdown";
-import type { ChatRouteInfo, CouncilRunView } from "../../state";
+import type { ChatRouteInfo, CouncilRunView, ToolActivity } from "../../state";
 import { CouncilTranscript } from "./CouncilTranscript";
 import { MessageList } from "./MessageList";
 import { TypingLoader } from "./TypingLoader";
 
 export interface ChatStreamProps {
   conversation: DesktopChatConversation;
-  streaming: { turnId: string; text: string } | undefined;
+  streaming: { turnId: string; text: string; tools?: ToolActivity[] } | undefined;
   route?: ChatRouteInfo;
   councilRun?: CouncilRunView;
   repositoryRoot: string | null;
@@ -22,6 +22,7 @@ const NEAR_BOTTOM_PX = 80;
 /** Streaming conversation surface: log role, live markdown, caret, stick-to-bottom scroll. */
 export function ChatStream({ conversation, streaming, route, councilRun, repositoryRoot, disabled, onRetry, onOpenArtifacts }: ChatStreamProps) {
   const scrollRef = useRef<HTMLOListElement>(null);
+  const tools = streaming?.tools ?? [];
 
   // Stick to bottom only while the reader is already near the bottom.
   useEffect(() => {
@@ -48,14 +49,21 @@ export function ChatStream({ conversation, streaming, route, councilRun, reposit
             <strong>HIVE</strong>
           </header>
           <div className="message-body">
+            {tools.length > 0 && (
+              <ul className="agent-tool-strip" aria-label="HiveBot tool activity">
+                {tools.map((tool, index) => (
+                  <li key={`${tool.name}-${index}`} className="agent-tool-chip anim-in">[{tool.label}]</li>
+                ))}
+              </ul>
+            )}
             {streaming.text ? (
               <>
                 {renderMarkdown(streaming.text)}
                 <span className="stream-caret" aria-hidden="true" />
               </>
-            ) : (
+            ) : tools.length === 0 ? (
               <TypingLoader role={conversation.role} route={route} />
-            )}
+            ) : null}
           </div>
         </li>
       )}

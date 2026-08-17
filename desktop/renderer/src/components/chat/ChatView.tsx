@@ -23,6 +23,7 @@ export function ChatView({ state, send, onToggleLeftRail }: ChatViewProps) {
   const [draft, setDraft] = useState("");
   const [roleChoice, setRoleChoice] = useState<string | undefined>(undefined);
   const [ground, setGround] = useState(false);
+  const [agent, setAgent] = useState(false);
   const [council, setCouncil] = useState(false);
   const [councilPreset, setCouncilPreset] = useState("standard");
   const [override, setOverride] = useState<{ providerId?: string; model?: string } | undefined>(undefined);
@@ -32,6 +33,7 @@ export function ChatView({ state, send, onToggleLeftRail }: ChatViewProps) {
     setDraft("");
     setRoleChoice(undefined);
     setGround(active?.ground ?? false);
+    setAgent(false);
     setOverride(undefined);
   }, [active?.id]);
 
@@ -85,6 +87,7 @@ export function ChatView({ state, send, onToggleLeftRail }: ChatViewProps) {
         ...(roleChoice ? { role: roleChoice } : {}),
         ...(override?.providerId || override?.model ? { providerId: override.providerId, model: override.model } : {}),
         ground,
+        agent,
       },
     });
   }
@@ -156,6 +159,8 @@ export function ChatView({ state, send, onToggleLeftRail }: ChatViewProps) {
               onRoleChange={setRoleChoice}
               ground={ground}
               onGroundChange={setGround}
+              agent={agent}
+              onAgentChange={setAgent}
               council={council}
               onCouncilChange={setCouncil}
               councilPreset={councilPreset}
