@@ -10,10 +10,11 @@ import type {
   DesktopChatConversation,
   DesktopChatMessage,
   DesktopChatSummary,
+  DesktopChatToolActivity,
   ChatReceipt,
 } from "../chat/types.js";
 
-export type { DesktopChatConversation, DesktopChatMessage, DesktopChatSummary };
+export type { DesktopChatConversation, DesktopChatMessage, DesktopChatSummary, DesktopChatToolActivity };
 
 /** Renderer-safe council run summary (mirrors HivebotRunSummary without node-side imports). */
 export interface DesktopCouncilStageRecord {
@@ -366,9 +367,14 @@ export type DesktopCommand =
         providerId?: string;
         model?: string;
         ground?: boolean;
+        agent?: boolean;
       };
     })
   | (DesktopCommandBase & { type: "chat.cancel"; conversationId: string })
+  | (DesktopCommandBase & {
+      type: "coder.handoff";
+      input: { conversationId: string; sourceMessageId: string; objective?: string };
+    })
   | (DesktopCommandBase & {
       type: "council.start";
       input: { task: string; preset?: "quick" | "standard" | "deep" | "audit"; providerId?: string; model?: string };
@@ -448,6 +454,19 @@ export type DesktopEvent =
       model: string;
       source: string;
       degraded: boolean;
+    })
+  | (DesktopEventBase & {
+      type: "chat.tool";
+      conversationId: string;
+      turnId: string;
+      seq: number;
+      tool: DesktopChatToolActivity;
+    })
+  | (DesktopEventBase & {
+      type: "coder.handoff.started";
+      conversationId: string;
+      threadId: string;
+      userMessageId: string;
     })
   | (DesktopEventBase & { type: "council.started"; runId: string; preset: string })
   | (DesktopEventBase & {

@@ -143,3 +143,33 @@ test("council commands and events validate with strict shapes", () => {
   assert.throws(() => validateDesktopEvent(event("council.completed", { runId: "hivebot-1-ab", summary: { ...councilSummary, extra: true } })), /unexpected or missing fields/);
   assert.ok(DESKTOP_COMMAND_TYPES.includes("council.start") && DESKTOP_COMMAND_TYPES.includes("council.cancel"));
 });
+
+// ---------------------------------------------------------------------------
+// Agent flag, tool events, and coder handoff
+// ---------------------------------------------------------------------------
+
+test("chat.send accepts an agent flag and rejects non-boolean agent", () => {
+  const base = { requestId: "r-1", type: "chat.send", input: { conversationId: "chat-1789200000000-ab12", content: "look", agent: true } };
+  assert.doesNotThrow(() => validateDesktopCommand(base));
+  assert.throws(() => validateDesktopCommand({ ...base, input: { ...base.input, agent: "yes" } }));
+});
+
+test("chat.tool event validates and rejects bad seq or tool shape", () => {
+  const ok = { type: "chat.tool", timestamp: now, conversationId: "chat-1789200000000-ab12", turnId: "turn-a-1", seq: 0, tool: { name: "read_file", label: "read src/foo.ts" } };
+  assert.doesNotThrow(() => validateDesktopEvent(ok));
+  assert.throws(() => validateDesktopEvent({ ...ok, seq: -1 }));
+  assert.throws(() => validateDesktopEvent({ ...ok, tool: { name: "read_file" } }));
+});
+
+test("coder.handoff command validates and rejects unknown fields", () => {
+  const ok = { requestId: "r-2", type: "coder.handoff", input: { conversationId: "chat-1789200000000-ab12", sourceMessageId: "msg-1" } };
+  assert.doesNotThrow(() => validateDesktopCommand(ok));
+  assert.throws(() => validateDesktopCommand({ ...ok, input: { ...ok.input, extra: 1 } }));
+  assert.throws(() => validateDesktopCommand({ requestId: "r-3", type: "coder.handoff", input: { conversationId: "nope", sourceMessageId: "msg-1" } }));
+});
+
+test("coder.handoff.started event validates", () => {
+  const ok = { type: "coder.handoff.started", timestamp: now, conversationId: "chat-1789200000000-ab12", threadId: "thread-1", userMessageId: "message-1" };
+  assert.doesNotThrow(() => validateDesktopEvent(ok));
+  assert.throws(() => validateDesktopEvent({ ...ok, threadId: "" }));
+});

@@ -179,6 +179,7 @@ export class DesktopCommandRouter {
       case "chat.route": { void this.#chatService.route(command.input).catch((error) => this.#emitServiceEvent({ type: "request.failed", timestamp: this.#clock(), requestId: command.requestId, message: redactDesktopFailure(error), recoverable: true })); return { type: "request.completed", timestamp, requestId: command.requestId }; }
       case "chat.send": { await this.#chatService.send(command.input); return { type: "request.completed", timestamp, requestId: command.requestId }; }
       case "chat.cancel": { this.#chatService.cancel(command.conversationId); return { type: "request.completed", timestamp, requestId: command.requestId }; }
+      case "coder.handoff": throw new Error("Coder handoff is not wired yet.");
       case "council.start": { await this.#councilService.start(command.input); return { type: "request.completed", timestamp, requestId: command.requestId }; }
       case "council.cancel": { this.#councilService.cancel(command.runId); return { type: "request.completed", timestamp, requestId: command.requestId }; }
       case "shell.open-view": case "shell.close-view": throw new Error("Shell window commands are handled by the desktop shell process.");

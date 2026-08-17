@@ -79,3 +79,9 @@ export interface DesktopChatConversation {
   updatedAt: string;
   messages: DesktopChatMessage[];
 }
+
+/** One agentic tool activity crossing the desktop IPC boundary. */
+export interface DesktopChatToolActivity {
+  name: string;
+  label: string;
+}

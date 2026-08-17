@@ -231,6 +231,12 @@ function validateChatMessage(value: unknown): void {
   if (message.receipt !== undefined) validateChatReceipt(message.receipt);
 }
 
+function validateChatTool(value: unknown): void {
+  const tool = exact(value, ["name", "label"], "chat tool activity");
+  string(tool.name, "chat tool name", 64);
+  string(tool.label, "chat tool label", 300);
+}
+
 function validateChatConversation(value: unknown): void {
   const conversation = exact(value, ["id", "cwd", "role", "ground", "createdAt", "updatedAt", "messages"], "chat conversation");
   chatConversationId(conversation.id, "chat conversation id");
@@ -342,13 +348,22 @@ export function validateDesktopCommand(value: unknown): DesktopCommand {
     case "chat.route": { optionalExact(root, ["requestId", "type"], ["input"], "desktop command"); if (root.input !== undefined) validateChatRouteInput(root.input); break; }
     case "chat.send": {
       exact(root, ["requestId", "type", "input"], "desktop command");
-      const input = optionalExact(root.input, ["conversationId", "content"], ["role", "providerId", "model", "ground"], "chat send input");
+      const input = optionalExact(root.input, ["conversationId", "content"], ["role", "providerId", "model", "ground", "agent"], "chat send input");
       chatConversationId(input.conversationId, "chat conversation id");
       string(input.content, "chat send content", MAX_CHAT_CONTENT_CHARS);
       if (input.role !== undefined) chatRole(input.role, "chat send role");
       if (input.providerId !== undefined) providerId(input.providerId);
       if (input.model !== undefined) string(input.model, "chat send model", 256);
       if (input.ground !== undefined) boolean(input.ground, "chat send ground flag");
+      if (input.agent !== undefined) boolean(input.agent, "chat send agent flag");
+      break;
+    }
+    case "coder.handoff": {
+      exact(root, ["requestId", "type", "input"], "desktop command");
+      const input = optionalExact(root.input, ["conversationId", "sourceMessageId"], ["objective"], "coder handoff input");
+      chatConversationId(input.conversationId, "chat conversation id");
+      id(input.sourceMessageId, "handoff source message id");
+      if (input.objective !== undefined) string(input.objective, "handoff objective", MAX_CHAT_CONTENT_CHARS);
       break;
     }
     case "council.start": {
@@ -379,6 +394,8 @@ const EVENT_KEYS: Record<DesktopEvent["type"], readonly string[]> = {
   "chat.started": ["type", "timestamp", "conversationId", "turnId"], "chat.chunk": ["type", "timestamp", "conversationId", "turnId", "chunk", "seq"],
   "chat.completed": ["type", "timestamp", "conversationId", "turnId", "message"], "chat.failed": ["type", "timestamp", "conversationId", "turnId", "message", "recoverable"],
   "chat.route.resolved": ["type", "timestamp", "role", "providerId", "model", "source", "degraded"],
+  "chat.tool": ["type", "timestamp", "conversationId", "turnId", "seq", "tool"],
+  "coder.handoff.started": ["type", "timestamp", "conversationId", "threadId", "userMessageId"],
   "council.started": ["type", "timestamp", "runId", "preset"], "council.stage": ["type", "timestamp", "runId", "stage"],
   "council.completed": ["type", "timestamp", "runId", "summary"], "council.failed": ["type", "timestamp", "runId", "message"],
   "shell.views": ["type", "timestamp", "views"],
@@ -431,6 +448,14 @@ export function validateDesktopEvent(value: unknown): DesktopEvent {
     case "chat.completed": chatConversationId(candidate.conversationId, "chat conversation id"); id(candidate.turnId, "chat turn id"); validateChatMessage(candidate.message); break;
     case "chat.failed": chatConversationId(candidate.conversationId, "chat conversation id"); id(candidate.turnId, "chat turn id"); boundaryString(candidate.message, "chat failure", 2_000); boolean(candidate.recoverable, "chat failure recoverable flag"); break;
     case "chat.route.resolved": chatRole(candidate.role, "chat route role"); providerId(candidate.providerId); string(candidate.model, "chat route model", 256); string(candidate.source, "chat route source", 200); boolean(candidate.degraded, "chat route degraded flag"); break;
+    case "chat.tool": {
+      chatConversationId(candidate.conversationId, "chat conversation id");
+      id(candidate.turnId, "chat turn id");
+      if (!Number.isSafeInteger(candidate.seq) || Number(candidate.seq) < 0 || Number(candidate.seq) > 1_000_000) throw new Error("chat tool seq is invalid.");
+      validateChatTool(candidate.tool);
+      break;
+    }
+    case "coder.handoff.started": chatConversationId(candidate.conversationId, "chat conversation id"); id(candidate.threadId, "handoff thread id"); id(candidate.userMessageId, "handoff message id"); break;
     case "council.started": id(candidate.runId, "council run id"); if (!COUNCIL_PRESETS.has(String(candidate.preset))) throw new Error("council preset is invalid."); break;
     case "council.stage": id(candidate.runId, "council run id"); validateCouncilStage(candidate.stage); break;
     case "council.completed": id(candidate.runId, "council run id"); validateCouncilSummary(candidate.summary); break;
