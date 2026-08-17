@@ -64,7 +64,7 @@ export function Welcome({ repositoryRoot, routes, send, onPickRole, onPickSugges
               </defs>
             </svg>
           </div>
-          <span className="welcome-title gpt-wordmark">HIVE Chat</span>
+          <span className="welcome-title gpt-wordmark">HiveBot</span>
         </div>
 
         {/* Hero Greeting */}

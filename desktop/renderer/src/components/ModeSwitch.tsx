@@ -7,8 +7,8 @@ export interface ModeSwitchProps {
 }
 
 const CELLS: { id: DesktopMode; label: string; hint: string }[] = [
-  { id: "chat", label: "Chat", hint: "Ctrl+Shift+1" },
-  { id: "coder", label: "Coder", hint: "Ctrl+Shift+2" },
+  { id: "chat", label: "HiveBot", hint: "Ctrl+Shift+1" },
+  { id: "coder", label: "Hive Code", hint: "Ctrl+Shift+2" },
 ];
 
 /** Topbar segmented control switching the Chat / Coder surfaces. */

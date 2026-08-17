@@ -13,9 +13,9 @@ describe("ModeSwitch", () => {
     render(<ModeSwitch mode="coder" onModeChange={onModeChange} />);
     const tablist = screen.getByRole("tablist", { name: /workspace mode/i });
     expect(tablist).toBeInTheDocument();
-    const chat = screen.getByRole("tab", { name: /chat/i });
+    const chat = screen.getByRole("tab", { name: /hivebot/i });
     expect(chat).toHaveAttribute("aria-selected", "false");
-    expect(screen.getByRole("tab", { name: /coder/i })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: /hive code/i })).toHaveAttribute("aria-selected", "true");
     await userEvent.setup().click(chat);
     expect(onModeChange).toHaveBeenCalledWith("chat");
   });

@@ -28,7 +28,7 @@ describe("Welcome", () => {
         onPickSuggestion={() => {}}
       />,
     );
-    expect(screen.getByText("HIVE Chat")).toBeInTheDocument();
+    expect(screen.getByText("HiveBot")).toBeInTheDocument();
     expect(screen.getAllByRole("listitem")).toHaveLength(7);
     expect(screen.getAllByText(/\[route\] ollama\/qwen3/)).toHaveLength(1);
     expect(screen.getAllByText(/route unresolved/)).toHaveLength(6);

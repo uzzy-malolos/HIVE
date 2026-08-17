@@ -14,6 +14,28 @@
       "verification-driven"
     ]
   },
+  "products": {
+    "hive_code": {
+      "name": "Hive Code",
+      "role": "Verified agentic coding harness (Claude Code / Codex analog)",
+      "surface": "hive code CLI + TUI, and the Coder desktop view",
+      "wordmark_case": "title case, never all-caps",
+      "copy": "Plan, build, validate, and review changes in isolated worktrees with approve-before-commit rails."
+    },
+    "hivebot": {
+      "name": "HiveBot",
+      "role": "Conversational assistant (Claude / ChatGPT analog)",
+      "surface": "hive chat / hive hivebot CLI, and the HiveChat desktop view",
+      "wordmark_case": "HiveBot is one word, capital H and B",
+      "copy": "Chat with BYOK personas, ground answers with read-only repo tools, and hand real work to Hive Code."
+    },
+    "hivechat": {
+      "name": "HiveChat",
+      "role": "The chat surface fronted by HiveBot",
+      "surface": "desktop Chat view",
+      "wordmark_case": "HiveChat is one word, capital H and C"
+    }
+  },
   "visual_identity": {
     "core_motif": "queen bee command cockpit",
     "secondary_motif": "hive cell geometry",

@@ -388,7 +388,7 @@ export async function runChat(
   // ---- Interactive REPL ----
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const HELP = `Commands: /role <slug>, /auto, /model <providerId>/<model>, /list, /skill, /agent on|off, /ground on|off|refresh, /sessions, /resume <id>, /clear, /exit, /help`;
-  console.log("HIVE Chat — type a message. " + HELP);
+  console.log("HiveBot — type a message. " + HELP);
   console.log(`Current role: ${currentRole}  (auto picks a model per message)\n`);
 
   const turnController = new AbortController();

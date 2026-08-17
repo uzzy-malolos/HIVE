@@ -142,7 +142,7 @@ async function start(): Promise<void> {
   function createShellWindow(view: ShellView): BrowserWindow {
     const window = new BrowserWindow({
       width: 1440, height: 900, minWidth: 1060, minHeight: 680, show: false, backgroundColor: "#0b0712",
-      title: view === "coder" ? "HIVE Coder" : "HIVE",
+      title: view === "coder" ? "Hive Code" : "HiveBot",
       webPreferences: { ...DESKTOP_BROWSER_WEB_PREFERENCES, preload: preloadFile },
     });
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));

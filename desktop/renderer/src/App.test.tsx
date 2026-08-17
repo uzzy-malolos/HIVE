@@ -517,8 +517,8 @@ describe("HIVE desktop cockpit", () => {
     // Open the repository, then switch to Chat via the topbar segmented control.
     await user.click(await screen.findByRole("button", { name: /C:\\HIVE/i }));
     await screen.findByRole("button", { name: /Desktop companion/i });
-    await user.click(screen.getByRole("tab", { name: /^chat$/i }));
-    expect(screen.getByText("HIVE Chat")).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: /^hivebot$/i }));
+    expect(document.querySelector(".welcome-title")?.textContent).toBe("HiveBot");
     expect(JSON.parse(localStorage.getItem("hive.desktop.ui.v1") ?? "{}").mode).toBe("chat");
 
     // Welcome surface: suggestion click creates the conversation and sends.
@@ -547,9 +547,9 @@ describe("HIVE desktop cockpit", () => {
     expect(screen.getByRole("log", { name: /conversation messages/i })).toBeInTheDocument();
 
     // Switching back to Coder preserves the thread list.
-    await user.click(screen.getByRole("tab", { name: /^coder$/i }));
+    await user.click(screen.getByRole("tab", { name: /^hive code$/i }));
     expect(await screen.findByRole("button", { name: /Desktop companion/i })).toBeInTheDocument();
-    expect(screen.queryByText("HIVE Chat")).not.toBeInTheDocument();
+    expect(document.querySelector(".welcome-title")).not.toBeInTheDocument();
   });
 });
 

@@ -19,6 +19,9 @@ HIVE - Hyper Intelligence for Verified Engineering - is built incrementally. Cor
   with archiving, opt-in Scout grounding, council (hivebot) mode with a
   progressive stage transcript, and a pop-out Coder OS window with broadcast
   event fan-out.
+- **Hive Code + HiveBot Product Surfaces (2026-08-17):** dual-product identity —
+  HiveBot gains a read-only agentic mode with a live tool-activity feed, and a
+  one-click handoff that turns a chat answer into a verified Hive Code run.
 
 *Note: The features in the completed phases above make up the Verified Core and have passed rigorous automated testing for safety, isolation, and explicit human-in-the-loop validation.*
 
