@@ -31,12 +31,34 @@ export interface ChatComposerProps {
   failed: boolean;
 }
 
-/** Bottom-anchored composer: auto-growing textarea, role/ground/council chips, Send/Stop. */
+/** Bottom-anchored composer: ChatGPT-style capsule input bar with plus button, voice waveform, and tools. */
 export function ChatComposer(props: ChatComposerProps) {
-  const { conversation, draft, setDraft, streaming, providers, routes, role, onRoleChange, ground, onGroundChange, council, onCouncilChange, councilPreset, onCouncilPresetChange, override, onOverrideChange, send, onSend, onStop, failed } = props;
+  const {
+    conversation,
+    draft,
+    setDraft,
+    streaming,
+    providers,
+    routes,
+    role,
+    onRoleChange,
+    ground,
+    onGroundChange,
+    council,
+    onCouncilChange,
+    councilPreset,
+    onCouncilPresetChange,
+    override,
+    onOverrideChange,
+    send,
+    onSend,
+    onStop,
+    failed,
+  } = props;
   const { prefs, updatePrefs } = usePrefs();
   const sendWithEnter = prefs.composerSendWithEnter ?? true;
   const [providerMenuOpen, setProviderMenuOpen] = useState(false);
+  const [toolsDrawerOpen, setToolsDrawerOpen] = useState(false);
   const lastSentRef = useRef<string | null>(null);
 
   // A failed turn restores the draft so the user can edit and resend.
@@ -58,7 +80,9 @@ export function ChatComposer(props: ChatComposerProps) {
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
-    const enterSends = sendWithEnter ? event.key === "Enter" && !event.shiftKey : event.key === "Enter" && (event.ctrlKey || event.metaKey);
+    const enterSends = sendWithEnter
+      ? event.key === "Enter" && !event.shiftKey
+      : event.key === "Enter" && (event.ctrlKey || event.metaKey);
     if (enterSends) {
       event.preventDefault();
       submit();
@@ -67,13 +91,14 @@ export function ChatComposer(props: ChatComposerProps) {
 
   return (
     <form
-      className="chat-composer"
+      className="chat-composer gpt-composer"
       onSubmit={(event) => {
         event.preventDefault();
         submit();
       }}
     >
-      <div className="composer-chips" aria-label="Composer options">
+      {/* Options Bar / Tools Drawer */}
+      <div className={`composer-chips gpt-tools-drawer${toolsDrawerOpen ? " is-open" : ""}`} aria-label="Composer options">
         <RolePicker role={role} routes={routes} send={send} onSelect={onRoleChange} />
         <button
           type="button"
@@ -165,29 +190,81 @@ export function ChatComposer(props: ChatComposerProps) {
         </button>
       </div>
 
-      <div className="composer-main">
+      {/* Main ChatGPT Capsule Bar */}
+      <div className="composer-main gpt-capsule-container">
+        {/* Left Plus / Tool Toggle Button */}
+        <button
+          type="button"
+          className={`capsule-icon-btn plus-btn${toolsDrawerOpen ? " active" : ""}`}
+          aria-label="Add tools or attachments"
+          title="Toggle tools & grounding options"
+          onClick={() => setToolsDrawerOpen((prev) => !prev)}
+        >
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <line x1="12" y1="5" x2="12" y2="19" strokeLinecap="round" />
+            <line x1="5" y1="12" x2="19" y2="12" strokeLinecap="round" />
+          </svg>
+        </button>
+
+        {/* Input Text Area */}
         <textarea
+          className="capsule-textarea"
           value={draft}
           rows={rows}
           maxLength={MAX_CHARS}
           aria-label={`Message HIVE (${conversation.role})`}
-          placeholder={council ? "Describe the task for the council..." : "Message HIVE..."}
+          placeholder={council ? "Describe the task for the council..." : "Ask anything"}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={handleKeyDown}
         />
-        <span className="char-counter" aria-label="Character count">
+
+        {/* Character Counter */}
+        <span className="char-counter gpt-char-counter" aria-label="Character count">
           {draft.length} / {MAX_CHARS.toLocaleString()}
         </span>
-        {streaming ? (
-          <button type="button" className="stop-btn" onClick={onStop}>
-            Stop
+
+        {/* Right Actions: Mic, Stop, or Voice/Send */}
+        <div className="gpt-right-actions">
+          <button
+            type="button"
+            className="capsule-icon-btn mic-btn"
+            aria-label="Voice input"
+            title="Voice input"
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2" strokeLinecap="round" />
+              <line x1="12" y1="19" x2="12" y2="23" strokeLinecap="round" />
+              <line x1="8" y1="23" x2="16" y2="23" strokeLinecap="round" />
+            </svg>
           </button>
-        ) : (
-          <button type="submit" className="send-btn" disabled={!canSend}>
-            Send
-          </button>
-        )}
+
+          {streaming ? (
+            <button type="button" className="stop-btn gpt-stop-btn" aria-label="Stop generation" onClick={onStop}>
+              Stop
+            </button>
+          ) : draft.trim().length > 0 ? (
+            <button type="submit" className="send-btn gpt-send-btn" disabled={!canSend} aria-label="Send message">
+              Send
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className="capsule-voice-pill"
+              aria-label="Start voice or send message"
+              title="Voice conversation"
+            >
+              <span className="wave-bars">
+                <span className="bar bar-1"></span>
+                <span className="bar bar-2"></span>
+                <span className="bar bar-3"></span>
+                <span className="bar bar-4"></span>
+              </span>
+            </button>
+          )}
+        </div>
       </div>
     </form>
   );
 }
+

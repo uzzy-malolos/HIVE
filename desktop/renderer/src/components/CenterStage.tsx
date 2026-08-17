@@ -122,6 +122,8 @@ export function CenterStage({
                 currentRun={currentRun}
                 runtimeEvents={state.runtimeEvents}
                 isPausing={Boolean(currentRun && state.pausingSessionId === currentRun.codingSessionId)}
+                providers={state.providers}
+                selectedProviderId={state.selectedProviderId}
                 onRetry={onRetryRun}
                 onSubmit={onSubmitMessage}
               />

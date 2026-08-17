@@ -10,10 +10,11 @@ import { Welcome } from "./Welcome";
 export interface ChatViewProps {
   state: DesktopViewState;
   send: (command: DesktopCommandInput) => Promise<DesktopEvent>;
+  onToggleLeftRail?: () => void;
 }
 
 /** Primary conversational surface: sessions rail + welcome or live conversation. */
-export function ChatView({ state, send }: ChatViewProps) {
+export function ChatView({ state, send, onToggleLeftRail }: ChatViewProps) {
   const { chat } = state;
   const active = chat.active;
   const streaming = active ? chat.streaming[active.id] : undefined;
@@ -112,6 +113,7 @@ export function ChatView({ state, send }: ChatViewProps) {
           onLoad={(id) => void loadConversation(id)}
           onCreate={() => void createConversation()}
           onArchive={(id) => void archiveConversation(id)}
+          onToggleSidebar={onToggleLeftRail}
         />
       </aside>
 

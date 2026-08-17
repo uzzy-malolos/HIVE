@@ -25,5 +25,6 @@ export async function writeDesktopChecksums({ directory, version }) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const packageJson = JSON.parse(await readFile(path.resolve("package.json"), "utf8"));
-  await writeDesktopChecksums({ directory: path.resolve("release"), version: packageJson.version });
+  const outputDir = path.resolve(process.env.HIVE_RELEASE_DIR || packageJson.build?.directories?.output || "dist-release");
+  await writeDesktopChecksums({ directory: outputDir, version: packageJson.version });
 }

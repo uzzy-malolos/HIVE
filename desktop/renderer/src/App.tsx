@@ -419,7 +419,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
       />
 
       {state.mode === "chat" ? (
-        <ChatView state={state} send={send} />
+        <ChatView state={state} send={send} onToggleLeftRail={() => toggleRail("left")} />
       ) : (
       <div className={cockpitClasses} aria-hidden={modalOpen || undefined}>
         <LeftRail

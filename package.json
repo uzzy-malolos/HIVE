@@ -32,7 +32,7 @@
     "desktop:e2e": "npm run build:desktop && playwright test --config tests/e2e/playwright.config.ts",
     "desktop:pack": "npm run build:desktop && electron-builder --dir --win --x64 --publish never",
     "desktop:smoke": "node tests/e2e/packaged-smoke.mjs",
-    "desktop:dist": "npm run build:desktop && electron-builder --win nsis portable --x64 --publish never && npm run desktop:checksum",
+    "desktop:dist": "npm run build:desktop && node scripts/package-desktop.mjs && npm run desktop:checksum",
     "desktop:checksum": "node scripts/checksum-desktop-artifacts.mjs",
     "lint": "tsc --noEmit",
     "pretest": "npm run build",
@@ -71,8 +71,9 @@
     "asarUnpack": [
       "dist/desktop/electron/worker.mjs"
     ],
+    "npmRebuild": false,
     "directories": {
-      "output": "release",
+      "output": "dist-binaries",
       "buildResources": "build/desktop"
     },
     "files": [

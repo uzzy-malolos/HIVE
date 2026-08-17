@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200" fill="none" role="img" aria-label="HIVE Verified Badge">
+  <defs>
+    <linearGradient id="badge-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e123a" />
+      <stop offset="100%" stop-color="#08070d" />
+    </linearGradient>
+    <linearGradient id="badge-ring" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a78bfa" />
+      <stop offset="50%" stop-color="#7c3aed" />
+      <stop offset="100%" stop-color="#3b82f6" />
+    </linearGradient>
+  </defs>
+
+  <!-- Outer Ring -->
+  <circle cx="100" cy="100" r="92" fill="url(#badge-bg)" stroke="url(#badge-ring)" stroke-width="4" />
+  <circle cx="100" cy="100" r="84" fill="none" stroke="#8b5cf6" stroke-opacity="0.3" stroke-width="1.5" stroke-dasharray="4 4" />
+
+  <!-- Triad Cluster -->
+  <polygon points="68,54 82,62 82,78 68,86 54,78 54,62" fill="#150d29" stroke="#a78bfa" stroke-width="2.5" stroke-linejoin="round" />
+  <polygon points="132,54 146,62 146,78 132,86 118,78 118,62" fill="#150d29" stroke="#818cf8" stroke-width="2.5" stroke-linejoin="round" />
+  <polygon points="100,114 114,122 114,138 100,146 86,138 86,122" fill="#150d29" stroke="#a78bfa" stroke-width="2.5" stroke-linejoin="round" />
+
+  <!-- Queen Center Node -->
+  <polygon points="100,74 118,84 118,106 100,116 82,106 82,84" fill="#24144a" stroke="#ddd6fe" stroke-width="3" stroke-linejoin="round" />
+  <polygon points="100,88 108,95 100,102 92,95" fill="#ffffff" />
+
+  <!-- Badge Text Arc / Subtitle -->
+  <text x="100" y="174" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700" letter-spacing="0.16em" fill="#a78bfa" text-anchor="middle">VERIFIED</text>
+</svg>

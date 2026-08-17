@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none" role="img" aria-label="HIVE Monochrome Mark">
+  <!-- Triad Cluster -->
+  <polygon points="44,30 56,37 56,51 44,58 32,51 32,37" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" />
+  <polygon points="84,30 96,37 96,51 84,58 72,51 72,37" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" />
+  <polygon points="64,74 76,81 76,95 64,102 52,95 52,81" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" />
+
+  <!-- Center Queen Node -->
+  <polygon points="64,48 78,56 78,74 64,82 50,74 50,56" fill="currentColor" fill-opacity="0.15" stroke="currentColor" stroke-width="4" stroke-linejoin="round" />
+  <polygon points="64,60 70,65 64,70 58,65" fill="currentColor" />
+</svg>

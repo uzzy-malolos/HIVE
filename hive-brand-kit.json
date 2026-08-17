@@ -306,6 +306,46 @@
     "avoid_color_only_state": true,
     "avoid_blinking_required_information": true
   },
+  "vector_assets": {
+    "master_icon": {
+      "path": "build/desktop/icon.svg",
+      "format": "svg",
+      "viewBox": "0 0 512 512",
+      "description": "512x512 master app squircle with multi-node isometric quantum hive cluster and gradients"
+    },
+    "desktop_ico": {
+      "path": "build/desktop/icon.ico",
+      "format": "ico",
+      "dimensions": "256x256 multi-plane",
+      "generator_script": "scripts/generate-desktop-icon.mjs",
+      "description": "Windows native executable icon with anti-aliased squircle and gradient hive matrix"
+    },
+    "favicon": {
+      "path": "desktop/renderer/public/favicon.svg",
+      "alt_path": "desktop/renderer/favicon.svg",
+      "format": "svg",
+      "viewBox": "0 0 32 32",
+      "description": "32x32 crisp vector favicon for browser tabs and Electron titlebars"
+    },
+    "horizontal_logo": {
+      "path": "build/desktop/hive-logo-horizontal.svg",
+      "format": "svg",
+      "viewBox": "0 0 640 160",
+      "description": "640x160 full horizontal lockup with app mark, pixel wordmark, version badge, and tagline"
+    },
+    "badge": {
+      "path": "build/desktop/hive-badge.svg",
+      "format": "svg",
+      "viewBox": "0 0 200 200",
+      "description": "Circular verified shield badge for README embeds, documentation, and social previews"
+    },
+    "monochrome_mark": {
+      "path": "build/desktop/hive-mark-monochrome.svg",
+      "format": "svg",
+      "viewBox": "0 0 128 128",
+      "description": "Clean currentColor monochrome icon for high-contrast/printing/terminal fallbacks"
+    }
+  },
   "implementation_targets": {
     "cli": {
       "language": "TypeScript",

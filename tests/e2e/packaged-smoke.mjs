@@ -8,7 +8,12 @@ import { promisify } from "node:util";
 const SMOKE_PROVIDER = "hive-packaged-smoke";
 const SMOKE_MESSAGE = "Complete the internal packaged smoke diagnostic.";
 const SMOKE_REPORT = "Packaged utility process diagnostic completed without network access.";
-const executable = path.resolve(process.env.HIVE_DESKTOP_PACKAGED_EXE ?? path.join("release", "win-unpacked", "HIVE.exe"));
+const packageJson = JSON.parse(await readFile(path.resolve("package.json"), "utf8"));
+const outputDir = process.env.HIVE_RELEASE_DIR || packageJson.build?.directories?.output || "dist-binaries";
+const executable = path.resolve(
+  process.env.HIVE_DESKTOP_PACKAGED_EXE ??
+  path.join(outputDir, "win-unpacked", "HIVE.exe")
+);
 await access(executable);
 const exec = promisify(execFile);
 const root = await mkdtemp(path.join(os.tmpdir(), "hive-packaged-smoke-"));
@@ -41,9 +46,13 @@ try {
   page.on("console", (message) => { if (message.type() === "error") rendererErrors.push(message.text()); });
   await page.waitForLoadState("domcontentloaded");
   if ((await page.title()) !== "HIVE Desktop") throw new Error(`Unexpected packaged title: ${await page.title()}`);
+  const coderTab = page.getByRole("tab", { name: /coder/i });
+  if (await coderTab.isVisible().catch(() => false)) {
+    await coderTab.click();
+  }
   for (const selector of ["nav[aria-label='Repositories and threads']", "main", "aside[aria-label='Run inspector']"]) await page.locator(selector).waitFor({ state: "visible", timeout: 15_000 });
-  await page.getByLabel("Repository path").fill(repository);
-  await page.getByRole("button", { name: /^Open$/ }).click();
+  await page.getByLabel("Repository path").first().fill(repository);
+  await page.getByRole("button", { name: /^Open$/ }).first().click();
   await page.getByLabel("New thread title").waitFor({ state: "visible" });
 
   await page.getByLabel("Provider").selectOption("openai");
