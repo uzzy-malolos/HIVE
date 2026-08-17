@@ -128,11 +128,6 @@ async function start(): Promise<void> {
   });
 
   const startupState = await stateStore.load();
-  const startupFailures: string[] = [];
-  for (const recent of startupState.recentRepositories) {
-    try { await workerSupervisor.reconcileRepositoryRuns(recent.path); }
-    catch (error) { startupFailures.push(redactDesktopFailure(error)); }
-  }
 
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     if (!isTrustedRendererUrl(details.url, locationPolicy)) { callback({ responseHeaders: details.responseHeaders }); return; }
@@ -161,7 +156,6 @@ async function start(): Promise<void> {
         window.show();
         window.focus();
       }
-      for (const failure of startupFailures) window.webContents.send(DESKTOP_EVENT_CHANNEL, { type: "worker.failed", timestamp: new Date().toISOString(), message: `Startup reconciliation failed: ${failure}`, recoverable: false });
     });
     window.once("ready-to-show", () => {
       clearTimeout(showSafetyTimer);
@@ -222,6 +216,13 @@ async function start(): Promise<void> {
   });
 
   shellWindows.open("chat");
+
+  // Reconcile repository runs only after the first window exists: a hung
+  // reconcile must never hold the single-instance lock behind an invisible app.
+  for (const recent of startupState.recentRepositories) {
+    try { await workerSupervisor.reconcileRepositoryRuns(recent.path); }
+    catch (error) { shellWindows.broadcast({ type: "worker.failed", timestamp: new Date().toISOString(), message: `Startup reconciliation failed: ${redactDesktopFailure(error)}`, recoverable: false }); }
+  }
 }
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
@@ -229,7 +230,7 @@ if (!gotSingleInstanceLock) {
   app.quit();
 } else {
   app.on("second-instance", () => {
-    shellWindows?.focusFirst();
+    shellWindows?.focusFirstOrCreate("chat");
   });
   app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
   app.whenReady().then(start).catch((error) => { dialog.showErrorBox("HIVE desktop failed to start", error instanceof Error ? error.message : String(error)); app.exit(1); });

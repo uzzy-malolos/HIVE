@@ -91,6 +91,19 @@ export class ShellWindowRegistry {
     }
   }
 
+  /**
+   * Focuses the first live window, or creates one for `fallbackView` when none
+   * exist. Used by the single-instance `second-instance` handler so a relaunch
+   * always surfaces a window even if the lock holder lost all of its windows.
+   */
+  public focusFirstOrCreate(fallbackView: ShellView): ShellWindowLike {
+    if (this.views().length > 0) {
+      this.focusFirst();
+      return [...this.#windows.values()].find((window) => !window.isDestroyed()) as ShellWindowLike;
+    }
+    return this.open(fallbackView);
+  }
+
   #publishViews(): void {
     const views = this.views();
     if (!views.length) return;

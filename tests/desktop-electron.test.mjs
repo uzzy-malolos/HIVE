@@ -1003,6 +1003,33 @@ test("ShellWindowRegistry refuses to close the last window and republishes after
   assert.throws(() => registry.close("coder"), /No shell window/i);
 });
 
+test("ShellWindowRegistry focusFirstOrCreate focuses a live window or recreates one when none exist", () => {
+  const created = [];
+  const registry = new ShellWindowRegistry({
+    create: (view) => { const window = mockShellWindow(); created.push({ view, window }); return window; },
+    onShellEvent: () => {},
+    eventChannel: "hive-desktop:event",
+    clock: () => now,
+  });
+
+  // No windows yet: a second-instance relaunch must recreate the chat surface.
+  const recreated = registry.focusFirstOrCreate("chat");
+  assert.equal(created.length, 1, "creates a window when the registry is empty");
+  assert.equal(created[0].view, "chat");
+  assert.equal(recreated, created[0].window);
+
+  // With a live window: relaunch focuses it instead of creating another.
+  const focused = registry.focusFirstOrCreate("chat");
+  assert.equal(created.length, 1, "does not create a second window");
+  assert.equal(focused, created[0].window);
+  assert.equal(created[0].window.focused, 1);
+
+  // After the window is destroyed, relaunch recreates it again.
+  created[0].window.close();
+  registry.focusFirstOrCreate("chat");
+  assert.equal(created.length, 2, "recreates after the last window is destroyed");
+});
+
 test("shell commands and the views event validate strictly", () => {
   assert.equal(validateDesktopCommand({ requestId: "request-1", type: "shell.open-view", view: "coder" }).type, "shell.open-view");
   assert.equal(validateDesktopCommand({ requestId: "request-1", type: "shell.close-view", view: "chat" }).type, "shell.close-view");
