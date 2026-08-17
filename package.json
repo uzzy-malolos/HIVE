@@ -1,6 +1,6 @@
 {
   "name": "hive",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Hyper Intelligence for Verified Engineering command cockpit and Windows desktop companion.",
   "author": "HIVE contributors",
   "private": false,
@@ -87,8 +87,18 @@
     "win": {
       "icon": "build/desktop/icon.ico",
       "target": [
-        { "target": "nsis", "arch": ["x64"] },
-        { "target": "portable", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "forceCodeSigning": false
     },

@@ -5,7 +5,7 @@ import test from "node:test";
 const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 
 test("desktop release metadata preserves the npm CLI while pinning the Windows toolchain", () => {
-  assert.equal(pkg.version, "0.5.0");
+  assert.equal(pkg.version, "0.6.0");
   assert.equal(pkg.main, "dist/index.js");
   assert.equal(pkg.bin.hive, "./bin/hive.mjs");
   assert.equal(pkg.engines.node, ">=22.12.0");
