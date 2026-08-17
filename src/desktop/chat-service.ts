@@ -7,8 +7,10 @@ import type {
   DesktopChatConversation,
   DesktopChatMessage,
   DesktopChatSummary,
+  DesktopChatToolActivity,
   ChatBindingRole,
   ChatMessage,
+  ChatReceipt,
   ChatRoleSelection,
   ChatSessionRecord,
 } from "../chat/types.js";
@@ -18,6 +20,7 @@ import { compactHistory } from "../chat/history.js";
 import { HISTORY_CHAR_BUDGET } from "../chat/chat-cli.js";
 import { buildScoutGrounding } from "../chat/grounding.js";
 import { createChatEngine, type ChatEngine, type ChatEngineOptions } from "../chat/engine.js";
+import { runChatAgentTurn, type ChatAgentTurnHooks, type ChatAgentTurnInput, type ChatAgentTurnResult } from "../chat/agent-turn.js";
 
 /** First 80 chars of the first user message; derived service-side, never client-side. */
 const TITLE_MAX_CHARS = 80;
@@ -32,6 +35,7 @@ export interface DesktopChatSendInput {
   providerId?: string;
   model?: string;
   ground?: boolean;
+  agent?: boolean;
 }
 
 export interface DesktopChatRouteInput {
@@ -45,6 +49,8 @@ export interface DesktopChatServiceOptions {
   createEngine?: (projectRoot: string, conversationId: string, options?: ChatEngineOptions) => ChatEngine;
   /** Injectable Scout grounding seam; defaults to buildScoutGrounding. */
   buildGrounding?: (cwd: string, taskPrompt: string) => Promise<string | null>;
+  /** Injectable agentic-turn runner for tests; defaults to runChatAgentTurn. */
+  runAgentTurn?: (input: ChatAgentTurnInput, hooks: ChatAgentTurnHooks) => Promise<ChatAgentTurnResult>;
   clock?: () => string;
   /** Chunk coalescing window; streaming chunks batch to keep IPC calm. */
   chunkBatchMs?: number;
@@ -60,6 +66,17 @@ function bindingToSlug(binding: string): ChatRoleSlug {
     if (slugToBinding(slug) === binding) return slug;
   }
   return "coding";
+}
+
+function labelToolCall(name: unknown, args: Record<string, unknown>): DesktopChatToolActivity {
+  const toolName = typeof name === "string" ? name : "tool";
+  const pathArg = typeof args.path === "string" && args.path.trim() ? args.path : undefined;
+  const queryArg = typeof args.query === "string" && args.query.trim() ? args.query : undefined;
+  let label = toolName;
+  if (toolName === "read_file") label = `read ${pathArg ?? "file"}`;
+  else if (toolName === "list_files") label = `list ${pathArg ?? "."}`;
+  else if (toolName === "search_files") label = queryArg ? `search "${queryArg}"` : "search";
+  return { name: toolName, label };
 }
 
 /** Mirrors the CLI's renderHistory so desktop turns share the transcript shape. */
@@ -103,6 +120,7 @@ export class DesktopChatService {
   readonly #emit: (event: DesktopEvent) => void;
   readonly #createEngine: NonNullable<DesktopChatServiceOptions["createEngine"]>;
   readonly #buildGrounding: NonNullable<DesktopChatServiceOptions["buildGrounding"]>;
+  readonly #runAgentTurn: NonNullable<DesktopChatServiceOptions["runAgentTurn"]>;
   readonly #clock: () => string;
   readonly #chunkBatchMs: number;
   readonly #chunkBatchChars: number;
@@ -118,6 +136,7 @@ export class DesktopChatService {
     this.#emit = emit;
     this.#createEngine = options.createEngine ?? ((projectRoot, conversationId, engineOptions) => createChatEngine(projectRoot, conversationId, engineOptions));
     this.#buildGrounding = options.buildGrounding ?? ((cwd, taskPrompt) => buildScoutGrounding(cwd, taskPrompt));
+    this.#runAgentTurn = options.runAgentTurn ?? ((input, hooks) => runChatAgentTurn(input, hooks));
     this.#clock = options.clock ?? (() => new Date().toISOString());
     this.#chunkBatchMs = options.chunkBatchMs ?? DEFAULT_CHUNK_BATCH_MS;
     this.#chunkBatchChars = options.chunkBatchChars ?? DEFAULT_CHUNK_BATCH_CHARS;
@@ -253,28 +272,49 @@ export class DesktopChatService {
       if (!flushTimer) flushTimer = setTimeout(flush, this.#chunkBatchMs);
     };
 
+    const finalize = async (output: string, receipt: ChatReceipt): Promise<void> => {
+      flush();
+      const messages = [...persisted.messages, { role: "assistant" as const, content: output, at: this.#clock(), receipt }];
+      const completed: ChatSessionRecord = { ...persisted, messages };
+      await store.save(completed);
+      const message = toMessage(messages[messages.length - 1], messages.length - 1);
+      this.#emit({ type: "chat.changed", timestamp: this.#clock(), conversation: toConversation(completed) });
+      this.#emit({ type: "chat.completed", timestamp: this.#clock(), conversationId: record.id, turnId, message });
+    };
+    const fail = async (error: unknown): Promise<void> => {
+      flush();
+      const message = controller.signal.aborted
+        ? "Cancelled."
+        : error instanceof Error ? error.message : String(error);
+      this.#emit({ type: "chat.failed", timestamp: this.#clock(), conversationId: record.id, turnId, message: message.slice(0, 2_000) || "Chat turn failed.", recoverable: true });
+    };
+    const cleanup = (): void => {
+      if (flushTimer) clearTimeout(flushTimer);
+      if (this.#controllers.get(record.id) === controller) this.#controllers.delete(record.id);
+    };
+
+    if (input.agent) {
+      let toolSeq = 0;
+      const hooks: ChatAgentTurnHooks = {
+        onEvent: (event) => {
+          if (event.type !== "subagent.tool_call") return;
+          const args = (event.payload.arguments ?? {}) as Record<string, unknown>;
+          this.#emit({ type: "chat.tool", timestamp: this.#clock(), conversationId: record.id, turnId, seq: toolSeq, tool: labelToolCall(event.payload.name, args) });
+          toolSeq += 1;
+        },
+      };
+      void this.#runAgentTurn(
+        { cwd: root, engine, role: slug, message: input.content, history: persisted.messages.slice(0, -1), override, grounding, signal: controller.signal },
+        hooks,
+      ).then((result) => finalize(result.output, result.receipt)).catch(fail).finally(cleanup);
+      return;
+    }
+
     void engine
       .complete({ role: slugToBinding(slug), prompt, systemPrompt, providerId: input.providerId, model: input.model, signal: controller.signal, onChunk })
-      .then(async (result) => {
-        flush();
-        const messages = [...persisted.messages, { role: "assistant" as const, content: result.output, at: this.#clock(), receipt: result.receipt }];
-        const completed: ChatSessionRecord = { ...persisted, messages };
-        await store.save(completed);
-        const message = toMessage(messages[messages.length - 1], messages.length - 1);
-        this.#emit({ type: "chat.changed", timestamp: this.#clock(), conversation: toConversation(completed) });
-        this.#emit({ type: "chat.completed", timestamp: this.#clock(), conversationId: record.id, turnId, message });
-      })
-      .catch(async (error: unknown) => {
-        flush();
-        const message = controller.signal.aborted
-          ? "Cancelled."
-          : error instanceof Error ? error.message : String(error);
-        this.#emit({ type: "chat.failed", timestamp: this.#clock(), conversationId: record.id, turnId, message: message.slice(0, 2_000) || "Chat turn failed.", recoverable: true });
-      })
-      .finally(() => {
-        if (flushTimer) clearTimeout(flushTimer);
-        if (this.#controllers.get(record.id) === controller) this.#controllers.delete(record.id);
-      });
+      .then((result) => finalize(result.output, result.receipt))
+      .catch(fail)
+      .finally(cleanup);
   }
 
   #store(): ChatSessionStore {
