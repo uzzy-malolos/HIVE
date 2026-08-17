@@ -162,6 +162,7 @@ test("chat.tool event validates and rejects bad seq or tool shape", () => {
 });
 
 test("coder.handoff command validates and rejects unknown fields", () => {
+  assert.ok(DESKTOP_COMMAND_TYPES.includes("coder.handoff"));
   const ok = { requestId: "r-2", type: "coder.handoff", input: { conversationId: "chat-1789200000000-ab12", sourceMessageId: "msg-1" } };
   assert.doesNotThrow(() => validateDesktopCommand(ok));
   assert.throws(() => validateDesktopCommand({ ...ok, input: { ...ok.input, extra: 1 } }));

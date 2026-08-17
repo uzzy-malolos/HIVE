@@ -45,6 +45,7 @@ const COMMANDS = new Set([
   "chat.route",
   "chat.send",
   "chat.cancel",
+  "coder.handoff",
   "council.start",
   "council.cancel",
   "shell.open-view",
