@@ -1043,6 +1043,7 @@ test("coder.handoff creates a thread, appends the brief, and starts a run", asyn
   assert.equal(dispatched.length, 1);
   assert.equal(dispatched[0].type, "run.start");
   assert.equal(dispatched[0].input.currentUserMessageId, event.userMessageId);
+  assert.deepEqual(dispatched[0].input.options, { mode: "auto", approvalPolicy: "changes" });
   assert.equal(threads[0].messages[0].content.includes("Step one. Step two."), true);
   await rm(root, { recursive: true, force: true }); await rm(appData, { recursive: true, force: true });
 });
@@ -1050,11 +1051,23 @@ test("coder.handoff creates a thread, appends the brief, and starts a run", asyn
 test("coder.handoff refuses when a repository run is already active", async () => {
   const root = await temporaryDirectory("hive-handoff-busy-");
   const appData = await temporaryDirectory("hive-handoff-busy-state-");
+  const dispatched = [];
+  const threads = [];
+  const threadStore = {
+    async list() { return threads; },
+    async create(input) { const thread = { schemaVersion: 1, id: input.id ?? `thread-${threads.length + 1}`, title: input.title, createdAt: now, updatedAt: now, archived: false, messages: [], runs: [] }; threads.push(thread); return thread; },
+    async load(id) { return threads.find((thread) => thread.id === id) ?? null; },
+    async save(thread) { return thread; },
+    async appendMessage(id, message) { const thread = threads.find((entry) => entry.id === id); thread.messages.push(message); return thread; },
+    async mutate() { throw new Error("unused"); },
+    async archive() { throw new Error("unused"); },
+  };
   const router = new DesktopCommandRouter({
     stateStore: new JsonDesktopAppStateStore(appData, { clock: () => now }),
     credentialVault: { async list() { return []; }, async metadata() { return null; }, async set() {}, async replace() {}, async remove() {}, async test() {} },
-    workerSupervisor: { async dispatchAndWait() {}, async reconcileRepositoryRuns() {}, hasActiveRuns() { return true; }, hasActiveRepository() { return true; } },
+    workerSupervisor: { async dispatchAndWait(rootArg, command) { dispatched.push(command); }, async reconcileRepositoryRuns() {}, hasActiveRuns() { return true; }, hasActiveRepository() { return true; } },
     guardedGitFactory: () => { throw new Error("unused"); },
+    threadStoreFactory: () => threadStore,
     chatService: { async load() { return { id: "chat-1789200000000-ab12", cwd: root, role: "auto", ground: false, createdAt: now, updatedAt: now, messages: [] }; } },
     clock: () => now,
   });
@@ -1062,5 +1075,7 @@ test("coder.handoff refuses when a repository run is already active", async () =
   const failed = await router.handle({ requestId: "r-10", type: "coder.handoff", input: { conversationId: "chat-1789200000000-ab12", sourceMessageId: "msg-1" } });
   assert.equal(failed.type, "request.failed");
   assert.match(failed.message, /active Hive Code run/i);
+  assert.equal(dispatched.length, 0);
+  assert.equal(threads.length, 0);
   await rm(root, { recursive: true, force: true }); await rm(appData, { recursive: true, force: true });
 });
