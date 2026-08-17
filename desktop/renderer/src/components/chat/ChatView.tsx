@@ -11,12 +11,13 @@ import { Welcome } from "./Welcome";
 export interface ChatViewProps {
   state: DesktopViewState;
   send: (command: DesktopCommandInput) => Promise<DesktopEvent>;
+  embedded?: boolean;
   onToggleLeftRail?: () => void;
   onHandoffToCoder?: (threadId: string) => void;
 }
 
 /** Primary conversational surface: sessions rail + welcome or live conversation. */
-export function ChatView({ state, send, onToggleLeftRail, onHandoffToCoder }: ChatViewProps) {
+export function ChatView({ state, send, embedded = false, onToggleLeftRail, onHandoffToCoder }: ChatViewProps) {
   const { chat } = state;
   const active = chat.active;
   const streaming = active ? chat.streaming[active.id] : undefined;
@@ -68,9 +69,20 @@ export function ChatView({ state, send, onToggleLeftRail, onHandoffToCoder }: Ch
   }
 
   async function sendMessage(): Promise<void> {
-    if (!active || !draft.trim()) return;
+    if (!draft.trim()) return;
     const content = draft.trim();
     setDraft("");
+
+    let conversationId = active?.id;
+    if (!conversationId) {
+      const created = await send({ type: "chat.create", input: roleChoice ? { role: roleChoice } : {} });
+      if (created.type === "chat.changed") {
+        conversationId = created.conversation.id;
+      } else {
+        return;
+      }
+    }
+
     if (council) {
       await send({
         type: "council.start",
@@ -85,7 +97,7 @@ export function ChatView({ state, send, onToggleLeftRail, onHandoffToCoder }: Ch
     await send({
       type: "chat.send",
       input: {
-        conversationId: active.id,
+        conversationId,
         content,
         ...(roleChoice ? { role: roleChoice } : {}),
         ...(override?.providerId || override?.model ? { providerId: override.providerId, model: override.model } : {}),
@@ -118,18 +130,22 @@ export function ChatView({ state, send, onToggleLeftRail, onHandoffToCoder }: Ch
     if (result.type === "coder.handoff.started") onHandoffToCoder?.(result.threadId);
   }
 
+  const containerClass = embedded ? "chat-embedded-pane" : `chat-grid${!state.rails.left ? " hide-left" : ""}`;
+
   return (
-    <div className={`chat-grid${!state.rails.left ? " hide-left" : ""}`}>
-      <aside className="chat-rail" aria-label="Conversations" hidden={!state.rails.left}>
-        <SessionRail
-          conversations={chat.conversations}
-          activeId={chat.activeId}
-          onLoad={(id) => void loadConversation(id)}
-          onCreate={() => void createConversation()}
-          onArchive={(id) => void archiveConversation(id)}
-          onToggleSidebar={onToggleLeftRail}
-        />
-      </aside>
+    <div className={containerClass}>
+      {!embedded && (
+        <aside className="chat-rail" aria-label="Conversations" hidden={!state.rails.left}>
+          <SessionRail
+            conversations={chat.conversations}
+            activeId={chat.activeId}
+            onLoad={(id) => void loadConversation(id)}
+            onCreate={() => void createConversation()}
+            onArchive={(id) => void archiveConversation(id)}
+            onToggleSidebar={onToggleLeftRail}
+          />
+        </aside>
+      )}
 
       <section className="chat-center" aria-label="Conversation">
         {!active ? (

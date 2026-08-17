@@ -8,8 +8,10 @@ export interface DesktopUiPrefs {
   density?: "comfortable" | "compact";
   accent?: "vivid" | "contrast";
   rails?: { left: boolean; right: boolean };
-  /** Top-level surface: conversational Chat or the coder cockpit. */
+  /** Top-level surface: conversational Chat or the coder cockpit (legacy compatibility). */
   mode?: "chat" | "coder";
+  /** Split ratio between Chat and Coder panes (e.g. 0.4 = 40% Chat / 60% Coder). */
+  splitRatio?: number;
   /** Enter sends the chat composer message (default true; Ctrl+Enter sends when false). */
   composerSendWithEnter?: boolean;
 }
@@ -27,6 +29,7 @@ export function defaultPrefs(): DesktopUiPrefs {
     density: "comfortable",
     accent: "vivid",
     rails: { left: true, right: true },
+    splitRatio: 0.4,
   };
 }
 

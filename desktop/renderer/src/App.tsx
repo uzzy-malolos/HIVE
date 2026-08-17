@@ -1,12 +1,10 @@
 import { FormEvent, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { DesktopCommand, DesktopCredentialKind, DesktopEvent, DesktopProviderConfigurationInput, DesktopProviderMetadata, GuardedGitActionPreview, ThreadMessage, ThreadRecordV1 } from "../../../src/desktop/types";
 import type { HiveDesktopBridge } from "./bridge";
-import { installedBridge, type DesktopCommandInput } from "./bridge";import { CenterStage } from "./components/CenterStage";
-import { ChatView } from "./components/chat/ChatView";
+import { installedBridge, type DesktopCommandInput } from "./bridge";
 import { CommandPalette, PaletteCommand } from "./components/CommandPalette";
 import { ConfirmationDialog } from "./components/ConfirmationDialog";
-import { Inspector } from "./components/Inspector";
-import { LeftRail } from "./components/LeftRail";
+import { DualCockpit } from "./components/DualCockpit";
 import { ProviderDialog } from "./components/ProviderDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { ShortcutHelp } from "./components/ShortcutHelp";
@@ -23,23 +21,13 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
   const [state, dispatch] = useReducer(reduceDesktopEvent, undefined, initialDesktopState);
   const { prefs, updatePrefs } = usePrefs();
 
-  // A `?view=` seed (pop-out windows) overrides the saved mode for this window
-  // only; the prefs write is suppressed so the saved preference survives.
-  const seededView = useMemo<DesktopMode | null>(() => {
-    try {
-      const view = new URLSearchParams(window.location.search).get("view");
-      return view === "chat" || view === "coder" ? view : null;
-    } catch {
-      return null;
-    }
-  }, []);
-
   const [repositoryPath, setRepositoryPath] = useState("");
   const [composer, setComposer] = useState("");
   const [saving, setSaving] = useState(false);
   const [retryMessageId, setRetryMessageId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [newThreadTitle, setNewThreadTitle] = useState("New HIVE task");
+  const [activeModelName, setActiveModelName] = useState("HIVE Auto");
 
   const [providerDialog, setProviderDialog] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -54,6 +42,8 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
   const repositoryRef = useRef<string | null>(null);
   const openEpochRef = useRef(0);
 
+  const splitRatio = prefs.splitRatio ?? 0.4;
+
   // Sync density and accent attributes to root HTML element
   useEffect(() => {
     if (typeof document !== "undefined") {
@@ -67,8 +57,6 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
     if (prefs.rails) {
       dispatch({ type: "ui.rails.set", rails: prefs.rails });
     }
-    if (seededView) dispatch({ type: "ui.mode", mode: seededView });
-    else if (prefs.mode) dispatch({ type: "ui.mode", mode: prefs.mode });
   }, []);
 
   const send = async (command: DesktopCommandInput, scope?: { epoch?: number; repositoryRoot?: string }): Promise<DesktopEvent> => {
@@ -118,7 +106,6 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
   const currentRun = state.run ?? latestRun(activeThread);
   const activeRun = currentRun && !terminalStatuses.has(currentRun.status) ? currentRun : null;
   const repositoryActiveRun = state.threads.flatMap((thread) => thread.runs).find((run) => !terminalStatuses.has(run.status)) ?? null;
-  const isPausing = Boolean(currentRun && state.pausingSessionId === currentRun.codingSessionId);
   const sessionId = currentRun?.codingSessionId;
   const report = sessionId ? state.reports[sessionId] : null;
   const modalOpen = Boolean(state.preview || providerDialog || settingsOpen || paletteOpen || shortcutHelpOpen);
@@ -135,7 +122,12 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
       if (epoch === openEpochRef.current && ready.type === "desktop.ready") {
         repositoryRef.current = ready.repositoryRoot;
         setRepositoryPath(ready.repositoryRoot);
-        await Promise.all([send({ type: "thread.list" }, { epoch, repositoryRoot: ready.repositoryRoot }), send({ type: "provider.list" }, { epoch }), send({ type: "git.inspect", repositoryRoot: ready.repositoryRoot }, { epoch, repositoryRoot: ready.repositoryRoot }), send({ type: "chat.list" }, { epoch })]);
+        await Promise.all([
+          send({ type: "thread.list" }, { epoch, repositoryRoot: ready.repositoryRoot }),
+          send({ type: "provider.list" }, { epoch }),
+          send({ type: "git.inspect", repositoryRoot: ready.repositoryRoot }, { epoch, repositoryRoot: ready.repositoryRoot }),
+          send({ type: "chat.list" }, { epoch }),
+        ]);
       }
     } finally { if (epoch === openEpochRef.current) setBusy(false); }
   }
@@ -239,15 +231,9 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
     updatePrefs({ rails: nextRails });
   };
 
-  const switchMode = (mode: DesktopMode) => {
-    if (state.mode === mode) return;
-    dispatch({ type: "ui.mode", mode });
-    updatePrefs({ mode });
-    if (mode === "chat" && state.repositoryRoot) void send({ type: "chat.list" });
+  const handleSplitRatioChange = (ratio: number) => {
+    updatePrefs({ splitRatio: ratio });
   };
-
-  const popOutCoder = () => { void send({ type: "shell.open-view", view: "coder" }); };
-  const recombineWindows = () => { void send({ type: "shell.close-view", view: "coder" }); };
 
   // Palette Commands
   const paletteCommands: PaletteCommand[] = useMemo(() => {
@@ -283,15 +269,9 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
 
     list.push({
       id: "toggle-left",
-      label: "Toggle Repositories rail",
+      label: "Toggle Workspace sidebar",
       hint: "[/]",
       run: () => toggleRail("left"),
-    });
-    list.push({
-      id: "toggle-right",
-      label: "Toggle Inspector rail",
-      hint: "[\\]",
-      run: () => toggleRail("right"),
     });
 
     if (activeRun) {
@@ -311,19 +291,6 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
     }
 
     list.push({
-      id: "mode-chat",
-      label: "Switch to Chat",
-      hint: "Ctrl+Shift+1",
-      run: () => switchMode("chat"),
-    });
-    list.push({
-      id: "mode-coder",
-      label: "Switch to Coder",
-      hint: "Ctrl+Shift+2",
-      run: () => switchMode("coder"),
-    });
-
-    list.push({
       id: "help-shortcuts",
       label: "View Keyboard Shortcuts",
       hint: "?",
@@ -337,7 +304,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
     });
 
     return list;
-  }, [state.repositories, activeRun, currentRun, state.rails, state.mode, state.repositoryRoot]);
+  }, [state.repositories, activeRun, currentRun, state.rails, state.repositoryRoot]);
 
   // Global Keyboard Shortcuts
   useEffect(() => {
@@ -364,17 +331,11 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
         return;
       }
 
-      if ((event.ctrlKey || event.metaKey) && event.shiftKey && (event.code === "Digit1" || event.code === "Digit2")) {
-        event.preventDefault();
-        switchMode(event.code === "Digit1" ? "chat" : "coder");
-        return;
-      }
-
       const isInput = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement;
 
       if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
         event.preventDefault();
-        if (state.mode === "coder") void submitMessage();
+        void submitMessage();
         return;
       }
 
@@ -397,101 +358,74 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [paletteOpen, shortcutHelpOpen, settingsOpen, providerDialog, state.preview, modalOpen, composer, activeThread, state.repositoryRoot, repositoryActiveRun, state.mode]);
-
-  const cockpitClasses = `cockpit-grid ${!state.rails.left ? "hide-left" : ""} ${!state.rails.right ? "hide-right" : ""}`;
+  }, [paletteOpen, shortcutHelpOpen, settingsOpen, providerDialog, state.preview, modalOpen, composer, activeThread, state.repositoryRoot, repositoryActiveRun]);
 
   return (
-    <div className="app-shell" data-density={prefs.density ?? "comfortable"} data-accent={prefs.accent ?? "vivid"}>
+    <div className="app-shell dual-shell" data-density={prefs.density ?? "comfortable"} data-accent={prefs.accent ?? "vivid"}>
       <a className="skip-link" href="#main-workspace">Skip to workspace</a>
       <TopBar
         worker={state.worker}
         modalOpen={modalOpen}
         activeRun={Boolean(repositoryActiveRun)}
-        mode={state.mode}
-        onModeChange={switchMode}
-        onPopOut={popOutCoder}
-        onRecombine={recombineWindows}
-        canRecombine={state.shellViews.length > 1}
+        repositoryRoot={state.repositoryRoot}
+        activeModelName={activeModelName}
+        onSelectModel={setActiveModelName}
         onToggleLeftRail={() => toggleRail("left")}
-        onToggleRightRail={() => toggleRail("right")}
         onOpenSettings={() => setSettingsOpen(true)}
       />
 
-      {state.mode === "chat" ? (
-        <ChatView
-          state={state}
-          send={send}
-          onToggleLeftRail={() => toggleRail("left")}
-          onHandoffToCoder={(threadId) => {
-            dispatch({ type: "ui.mode", mode: "coder" });
-            updatePrefs({ mode: "coder" });
-            void send({ type: "thread.load", threadId });
-          }}
-        />
-      ) : (
-      <div className={cockpitClasses} aria-hidden={modalOpen || undefined}>
-        <LeftRail
-          repositoryPath={repositoryPath}
-          setRepositoryPath={setRepositoryPath}
-          busy={busy}
-          repositories={state.repositories}
-          repositoryRoot={state.repositoryRoot}
-          threads={state.threads}
-          activeThreadId={state.activeThreadId}
-          newThreadTitle={newThreadTitle}
-          setNewThreadTitle={setNewThreadTitle}
-          onOpenRepository={openRepository}
-          onCreateThread={createThread}
-          onLoadThread={loadThread}
-        />
-
-        <CenterStage
-          state={state}
-          activeThread={activeThread}
-          activeRun={activeRun}
-          currentRun={currentRun}
-          repositoryActiveRun={repositoryActiveRun}
-          report={report}
-          sessionId={sessionId}
-          composer={composer}
-          setComposer={setComposer}
-          saving={saving}
-          retryMessageId={retryMessageId}
-          mainRef={mainRef}
-          tabRefs={tabRefs}
-          onArchiveThread={(threadId) => send({ type: "thread.archive", threadId }).then(() => {})}
-          onChooseTab={chooseTab}
-          onRetryRun={retryRun}
-          onSubmitMessage={submitMessage}
-        />
-
-        <Inspector
-          state={state}
-          currentRun={currentRun}
-          activeRun={activeRun}
-          isPausing={isPausing}
-          sessionId={sessionId}
-          report={report}
-          onClearCredential={clearCredential}
-          onProviderChange={(event) => {
-            clearCredential();
-            dispatch({
-              type: "provider.changed",
-              timestamp: new Date().toISOString(),
-              provider: state.providers.find((provider) => provider.id === event.target.value)!,
-            });
-          }}
-          onOpenProviderDialog={() => {
-            clearCredential();
-            setProviderDialog(true);
-          }}
-          onRunAction={runAction}
-          onPreviewGit={previewGit}
-          onSendExternal={(command) => send(command)}
-        />
-      </div>
-      )}
+      <DualCockpit
+        state={state}
+        modalOpen={modalOpen}
+        send={send}
+        repositoryPath={repositoryPath}
+        setRepositoryPath={setRepositoryPath}
+        busy={busy}
+        activeThread={activeThread}
+        activeRun={activeRun}
+        currentRun={currentRun}
+        repositoryActiveRun={repositoryActiveRun}
+        report={report}
+        sessionId={sessionId}
+        composer={composer}
+        setComposer={setComposer}
+        saving={saving}
+        retryMessageId={retryMessageId}
+        newThreadTitle={newThreadTitle}
+        setNewThreadTitle={setNewThreadTitle}
+        splitRatio={splitRatio}
+        onSplitRatioChange={handleSplitRatioChange}
+        mainRef={mainRef}
+        tabRefs={tabRefs}
+        onOpenRepository={openRepository}
+        onCreateThread={createThread}
+        onLoadThread={loadThread}
+        onArchiveThread={(threadId) => send({ type: "thread.archive", threadId }).then(() => {})}
+        onChooseTab={chooseTab}
+        onRetryRun={retryRun}
+        onSubmitMessage={submitMessage}
+        onClearCredential={clearCredential}
+        onProviderChange={(event) => {
+          clearCredential();
+          dispatch({
+            type: "provider.changed",
+            timestamp: new Date().toISOString(),
+            provider: state.providers.find((provider) => provider.id === event.target.value)!,
+          });
+        }}
+        onOpenProviderDialog={() => {
+          clearCredential();
+          setProviderDialog(true);
+        }}
+        onRunAction={runAction}
+        onPreviewGit={previewGit}
+        onSendExternal={(command) => send(command)}
+        onToggleLeftRail={() => toggleRail("left")}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onHandoffToCoder={(threadId) => {
+          void send({ type: "thread.load", threadId });
+        }}
+      />
 
       <Toast toasts={toasts} onDismiss={(id) => setToasts((prev) => prev.filter((t) => t.id !== id))} />
 

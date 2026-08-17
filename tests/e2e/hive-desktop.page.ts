@@ -48,7 +48,7 @@ export class HiveDesktopPage {
 
   async send(message: string): Promise<void> {
     await this.page.getByLabel("Message HIVE").fill(message);
-    await this.page.getByRole("button", { name: "Send" }).click();
+    await this.page.getByRole("main").getByRole("button", { name: "Send", exact: true }).click();
   }
 
   async expectPhase(phase: string): Promise<void> {

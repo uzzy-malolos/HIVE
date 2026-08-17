@@ -12,9 +12,16 @@ const electronDist = path.join(rootDir, "node_modules", "electron", "dist");
 
 console.log("==> 1. Assembling staging app...");
 if (existsSync(stagingDir)) {
-  rmSync(stagingDir, { recursive: true, force: true });
+  rmSync(stagingDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
 mkdirSync(stagingDir, { recursive: true });
+
+if (existsSync(unpackedDir)) {
+  rmSync(unpackedDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+}
+mkdirSync(unpackedDir, { recursive: true });
+
+
 
 // Copy package.json with desktop main entrypoint, dist, and dist-desktop/renderer
 const pkg = JSON.parse(readFileSync(path.join(rootDir, "package.json"), "utf8"));
@@ -48,7 +55,10 @@ await asar.createPackageWithOptions(stagingDir, appAsarPath, {
   unpack: "**/worker.mjs",
 });
 
+await new Promise((resolve) => setTimeout(resolve, 1500));
+
 console.log("==> 4. Packaging NSIS installer & Portable executable with electron-builder...");
+
 execSync("npx electron-builder --win nsis portable --x64 --prepackaged dist-binaries/win-unpacked --publish never", {
   stdio: "inherit",
   cwd: rootDir,

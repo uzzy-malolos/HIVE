@@ -136,36 +136,29 @@ async function start(): Promise<void> {
 
   function createShellWindow(view: ShellView): BrowserWindow {
     const window = new BrowserWindow({
-      width: 1440, height: 900, minWidth: 1060, minHeight: 680, show: false, backgroundColor: "#0b0712",
+      width: 1440, height: 900, minWidth: 1060, minHeight: 680, show: true, backgroundColor: "#0b0712",
       title: view === "coder" ? "Hive Code" : "HiveBot",
       webPreferences: { ...DESKTOP_BROWSER_WEB_PREFERENCES, preload: preloadFile },
     });
-    const showSafetyTimer = setTimeout(() => {
-      if (!window.isDestroyed() && !window.isVisible()) {
-        window.show();
-        window.focus();
-      }
-    }, 2500);
+    window.show();
+    window.focus();
 
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     window.webContents.on("will-navigate", (event) => event.preventDefault());
     window.webContents.on("will-attach-webview", (event) => event.preventDefault());
     window.webContents.once("did-finish-load", () => {
-      clearTimeout(showSafetyTimer);
-      if (!window.isDestroyed() && !window.isVisible()) {
+      if (!window.isDestroyed()) {
         window.show();
         window.focus();
       }
     });
     window.once("ready-to-show", () => {
-      clearTimeout(showSafetyTimer);
-      if (!window.isDestroyed() && !window.isVisible()) {
+      if (!window.isDestroyed()) {
         window.show();
         window.focus();
       }
     });
     window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
-      clearTimeout(showSafetyTimer);
       dialog.showErrorBox("HIVE UI Failed to Load", `Failed to load ${validatedURL}\nError: ${errorDescription} (${errorCode})`);
     });
     window.on("close", (event) => {

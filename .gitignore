@@ -11,7 +11,8 @@ coverage/
 !.env.example
 .hive/
 .hivemind/
-.superpowers/
+dist-binaries/
+build/staging-app/
 .zcode/
 logs/
 .next/
