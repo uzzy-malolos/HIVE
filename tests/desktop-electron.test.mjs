@@ -1012,3 +1012,55 @@ test("shell commands and the views event validate strictly", () => {
   assert.throws(() => validateDesktopEvent({ type: "shell.views", timestamp: now, views: [] }), /views are invalid/);
   assert.throws(() => validateDesktopEvent({ type: "shell.views", timestamp: now, views: ["chat", "coder", "chat"] }), /views are invalid/);
 });
+
+test("coder.handoff creates a thread, appends the brief, and starts a run", async () => {
+  const root = await temporaryDirectory("hive-handoff-");
+  const appData = await temporaryDirectory("hive-handoff-state-");
+  const dispatched = [];
+  const threads = [];
+  const threadStore = {
+    async list() { return threads; },
+    async create(input) { const thread = { schemaVersion: 1, id: input.id ?? `thread-${threads.length + 1}`, title: input.title, createdAt: now, updatedAt: now, archived: false, messages: [], runs: [] }; threads.push(thread); return thread; },
+    async load(id) { return threads.find((thread) => thread.id === id) ?? null; },
+    async save(thread) { return thread; },
+    async appendMessage(id, message) { const thread = threads.find((entry) => entry.id === id); thread.messages.push(message); return thread; },
+    async mutate() { throw new Error("unused"); },
+    async archive() { throw new Error("unused"); },
+  };
+  const router = new DesktopCommandRouter({
+    stateStore: new JsonDesktopAppStateStore(appData, { clock: () => now }),
+    credentialVault: { async list() { return []; }, async metadata() { return null; }, async set() {}, async replace() {}, async remove() {}, async test() {} },
+    workerSupervisor: { async dispatchAndWait(rootArg, command) { dispatched.push(command); }, async reconcileRepositoryRuns() {}, hasActiveRuns() { return false; }, hasActiveRepository() { return false; } },
+    guardedGitFactory: () => { throw new Error("unused"); },
+    threadStoreFactory: () => threadStore,
+    chatService: { async load() { return { id: "chat-1789200000000-ab12", cwd: root, role: "auto", ground: false, createdAt: now, updatedAt: now, messages: [ { id: "msg-0", role: "user", content: "q", at: now }, { id: "msg-1", role: "assistant", content: "Step one. Step two.", at: now } ] }; } },
+    clock: () => now,
+  });
+  await router.handle({ requestId: "open", type: "repository.open", repositoryRoot: root });
+  const event = await router.handle({ requestId: "r-9", type: "coder.handoff", input: { conversationId: "chat-1789200000000-ab12", sourceMessageId: "msg-1" } });
+  assert.equal(event.type, "coder.handoff.started");
+  assert.ok(event.threadId);
+  assert.equal(dispatched.length, 1);
+  assert.equal(dispatched[0].type, "run.start");
+  assert.equal(dispatched[0].input.currentUserMessageId, event.userMessageId);
+  assert.equal(threads[0].messages[0].content.includes("Step one. Step two."), true);
+  await rm(root, { recursive: true, force: true }); await rm(appData, { recursive: true, force: true });
+});
+
+test("coder.handoff refuses when a repository run is already active", async () => {
+  const root = await temporaryDirectory("hive-handoff-busy-");
+  const appData = await temporaryDirectory("hive-handoff-busy-state-");
+  const router = new DesktopCommandRouter({
+    stateStore: new JsonDesktopAppStateStore(appData, { clock: () => now }),
+    credentialVault: { async list() { return []; }, async metadata() { return null; }, async set() {}, async replace() {}, async remove() {}, async test() {} },
+    workerSupervisor: { async dispatchAndWait() {}, async reconcileRepositoryRuns() {}, hasActiveRuns() { return true; }, hasActiveRepository() { return true; } },
+    guardedGitFactory: () => { throw new Error("unused"); },
+    chatService: { async load() { return { id: "chat-1789200000000-ab12", cwd: root, role: "auto", ground: false, createdAt: now, updatedAt: now, messages: [] }; } },
+    clock: () => now,
+  });
+  await router.handle({ requestId: "open", type: "repository.open", repositoryRoot: root });
+  const failed = await router.handle({ requestId: "r-10", type: "coder.handoff", input: { conversationId: "chat-1789200000000-ab12", sourceMessageId: "msg-1" } });
+  assert.equal(failed.type, "request.failed");
+  assert.match(failed.message, /active Hive Code run/i);
+  await rm(root, { recursive: true, force: true }); await rm(appData, { recursive: true, force: true });
+});

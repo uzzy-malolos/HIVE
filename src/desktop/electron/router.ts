@@ -72,7 +72,7 @@ export class DesktopCommandRouter {
     try {
       const command = validateDesktopCommand(untrusted);
       requestId = command.requestId;
-      const repositoryCommands = new Set(["repository.open", "thread.list", "thread.create", "thread.load", "thread.message.append", "thread.archive", "run.start", "run.pause", "run.resume", "run.cancel", "run.report", "git.inspect", "changes.diff", "git.commit.preview", "git.commit.confirm", "git.push.preview", "git.push.confirm", "git.pull-request.preview", "git.pull-request.confirm", "git.discard.preview", "git.discard.confirm", "external.open-editor", "external.open-terminal", "external.open-explorer", "chat.list", "chat.create", "chat.load", "chat.archive", "chat.route", "chat.send", "chat.cancel", "council.start", "council.cancel"]);
+      const repositoryCommands = new Set(["repository.open", "thread.list", "thread.create", "thread.load", "thread.message.append", "thread.archive", "run.start", "run.pause", "run.resume", "run.cancel", "run.report", "git.inspect", "changes.diff", "git.commit.preview", "git.commit.confirm", "git.push.preview", "git.push.confirm", "git.pull-request.preview", "git.pull-request.confirm", "git.discard.preview", "git.discard.confirm", "external.open-editor", "external.open-terminal", "external.open-explorer", "chat.list", "chat.create", "chat.load", "chat.archive", "chat.route", "chat.send", "chat.cancel", "coder.handoff", "council.start", "council.cancel"]);
       if (repositoryCommands.has(command.type)) provenanceRoot = command.type === "repository.open" ? command.repositoryRoot : this.#repositoryRoot;
       const dispatched = await this.#dispatch(command);
       const repositoryScoped = new Set(["desktop.ready", "thread.changed", "thread.listed", "run.changed", "run.pause-requested", "run.reported", "runtime.event", "worker.starting", "worker.started", "worker.stopped", "git.changed", "git.previewed", "git.action-completed", "changes.diffed", "request.completed"]);
@@ -179,7 +179,25 @@ export class DesktopCommandRouter {
       case "chat.route": { void this.#chatService.route(command.input).catch((error) => this.#emitServiceEvent({ type: "request.failed", timestamp: this.#clock(), requestId: command.requestId, message: redactDesktopFailure(error), recoverable: true })); return { type: "request.completed", timestamp, requestId: command.requestId }; }
       case "chat.send": { await this.#chatService.send(command.input); return { type: "request.completed", timestamp, requestId: command.requestId }; }
       case "chat.cancel": { this.#chatService.cancel(command.conversationId); return { type: "request.completed", timestamp, requestId: command.requestId }; }
-      case "coder.handoff": throw new Error("Coder handoff is not wired yet.");
+      case "coder.handoff": {
+        const root = this.#requiredRepository();
+        return this.#withRepositoryMutation(root, async () => {
+          if (this.options.workerSupervisor.hasActiveRepository(root)) throw new Error("Wait for the active Hive Code run to stop before handing off another task.");
+          const conversation = await this.#chatService.load(command.input.conversationId);
+          const source = conversation.messages.find((message) => message.id === command.input.sourceMessageId);
+          if (!source || source.role !== "assistant") throw new Error("Handoff source must be an assistant message.");
+          const objective = (command.input.objective ?? source.content).trim();
+          if (!objective) throw new Error("Handoff objective is empty.");
+          const title = objective.replace(/\s+/g, " ").slice(0, 80);
+          const thread = await this.#threads().create({ title: `HiveBot: ${title}` });
+          const brief = `Implement the following plan produced by HiveBot in HiveChat:\n\n${objective}`;
+          const userMessageId = `message-${Date.now().toString(36)}`;
+          await this.#threads().appendMessage(thread.id, { id: userMessageId, role: "user", content: brief, createdAt: timestamp });
+          const dispatch = this.options.workerSupervisor.dispatchAndWait.bind(this.options.workerSupervisor);
+          await dispatch(root, { requestId: command.requestId, type: "run.start", input: { repositoryRoot: root, threadId: thread.id, currentUserMessageId: userMessageId, options: { mode: "auto", approvalPolicy: "changes" } } });
+          return { type: "coder.handoff.started", timestamp, conversationId: conversation.id, threadId: thread.id, userMessageId };
+        });
+      }
       case "council.start": { await this.#councilService.start(command.input); return { type: "request.completed", timestamp, requestId: command.requestId }; }
       case "council.cancel": { this.#councilService.cancel(command.runId); return { type: "request.completed", timestamp, requestId: command.requestId }; }
       case "shell.open-view": case "shell.close-view": throw new Error("Shell window commands are handled by the desktop shell process.");

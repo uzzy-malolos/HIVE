@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { DesktopEvent } from "../../../../../src/desktop/types";
 import type { DesktopCommandInput } from "../../bridge";
 import type { DesktopViewState } from "../../state";
+import { Dialog } from "../../Dialog";
 import { ChatComposer } from "./ChatComposer";
 import { ChatStream } from "./ChatStream";
 import { SessionRail } from "./SessionRail";
@@ -11,10 +12,11 @@ export interface ChatViewProps {
   state: DesktopViewState;
   send: (command: DesktopCommandInput) => Promise<DesktopEvent>;
   onToggleLeftRail?: () => void;
+  onHandoffToCoder?: (threadId: string) => void;
 }
 
 /** Primary conversational surface: sessions rail + welcome or live conversation. */
-export function ChatView({ state, send, onToggleLeftRail }: ChatViewProps) {
+export function ChatView({ state, send, onToggleLeftRail, onHandoffToCoder }: ChatViewProps) {
   const { chat } = state;
   const active = chat.active;
   const streaming = active ? chat.streaming[active.id] : undefined;
@@ -27,6 +29,7 @@ export function ChatView({ state, send, onToggleLeftRail }: ChatViewProps) {
   const [council, setCouncil] = useState(false);
   const [councilPreset, setCouncilPreset] = useState("standard");
   const [override, setOverride] = useState<{ providerId?: string; model?: string } | undefined>(undefined);
+  const [handoffPending, setHandoffPending] = useState<string | null>(null);
 
   // Conversation switches reset per-conversation composer state.
   useEffect(() => {
@@ -107,6 +110,14 @@ export function ChatView({ state, send, onToggleLeftRail }: ChatViewProps) {
     await send({ type: "external.open-explorer", input: { repositoryRoot: state.repositoryRoot, path: relativeDir } });
   }
 
+  async function confirmHandoff(): Promise<void> {
+    if (!active || !handoffPending) return;
+    const sourceMessageId = handoffPending;
+    setHandoffPending(null);
+    const result = await send({ type: "coder.handoff", input: { conversationId: active.id, sourceMessageId } });
+    if (result.type === "coder.handoff.started") onHandoffToCoder?.(result.threadId);
+  }
+
   return (
     <div className={`chat-grid${!state.rails.left ? " hide-left" : ""}`}>
       <aside className="chat-rail" aria-label="Conversations" hidden={!state.rails.left}>
@@ -147,6 +158,8 @@ export function ChatView({ state, send, onToggleLeftRail }: ChatViewProps) {
               disabled={Boolean(streaming)}
               onRetry={(content) => void retryMessage(content)}
               onOpenArtifacts={(relativeDir) => void openArtifacts(relativeDir)}
+              handoffAvailable={Boolean(state.repositoryRoot)}
+              onHandoff={(messageId) => setHandoffPending(messageId)}
             />
             <ChatComposer
               conversation={active}
@@ -175,6 +188,17 @@ export function ChatView({ state, send, onToggleLeftRail }: ChatViewProps) {
           </div>
         )}
       </section>
+
+      {handoffPending && (
+        <Dialog title="Send to Hive Code" onClose={() => setHandoffPending(null)}>
+          <span className="eyebrow">Hive Code handoff</span>
+          <p>Hand this HiveBot answer to Hive Code as a verified run? It will create a coder thread and start an isolated, approve-before-commit harness run.</p>
+          <div className="dialog-actions">
+            <button type="button" className="secondary" onClick={() => setHandoffPending(null)}>Cancel</button>
+            <button type="button" onClick={() => void confirmHandoff()}>Send to Hive Code</button>
+          </div>
+        </Dialog>
+      )}
     </div>
   );
 }

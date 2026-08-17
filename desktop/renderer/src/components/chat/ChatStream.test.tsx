@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { DesktopChatConversation } from "../../../../../src/desktop/types";
 import { ChatStream } from "./ChatStream";
@@ -81,5 +82,13 @@ describe("ChatStream", () => {
     await waitFor(() => {
       expect(onRetry).toHaveBeenCalledWith("Write a hello function");
     });
+  });
+
+  it("offers send-to-hive-code on assistant messages when a repository is open", async () => {
+    const onHandoff = vi.fn();
+    const withMessage: DesktopChatConversation = { ...conversation, messages: [ { id: "msg-0", role: "user", content: "q", at: now }, { id: "msg-1", role: "assistant", content: "answer", at: now } ] };
+    render(<ChatStream conversation={withMessage} streaming={undefined} disabled={false} onRetry={() => {}} repositoryRoot="C:\HIVE" onOpenArtifacts={() => {}} handoffAvailable onHandoff={onHandoff} />);
+    await userEvent.setup().click(screen.getByRole("button", { name: /send to hive code/i }));
+    expect(onHandoff).toHaveBeenCalledWith("msg-1");
   });
 });

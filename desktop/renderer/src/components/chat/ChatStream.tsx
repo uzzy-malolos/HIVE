@@ -15,12 +15,14 @@ export interface ChatStreamProps {
   disabled: boolean;
   onRetry: (content: string) => void;
   onOpenArtifacts: (relativeDir: string) => void;
+  onHandoff?: (messageId: string) => void;
+  handoffAvailable?: boolean;
 }
 
 const NEAR_BOTTOM_PX = 80;
 
 /** Streaming conversation surface: log role, live markdown, caret, stick-to-bottom scroll. */
-export function ChatStream({ conversation, streaming, route, councilRun, repositoryRoot, disabled, onRetry, onOpenArtifacts }: ChatStreamProps) {
+export function ChatStream({ conversation, streaming, route, councilRun, repositoryRoot, disabled, onRetry, onOpenArtifacts, onHandoff, handoffAvailable }: ChatStreamProps) {
   const scrollRef = useRef<HTMLOListElement>(null);
   const tools = streaming?.tools ?? [];
 
@@ -34,7 +36,7 @@ export function ChatStream({ conversation, streaming, route, councilRun, reposit
 
   return (
     <ol className="chat-messages" role="log" aria-live="polite" aria-label="Conversation messages" ref={scrollRef}>
-      <MessageList messages={conversation.messages} disabled={disabled} onRetry={onRetry} />
+      <MessageList messages={conversation.messages} disabled={disabled} onRetry={onRetry} onHandoff={onHandoff} handoffAvailable={handoffAvailable} />
       {councilRun && (
         <li className="message message-assistant council-message">
           <header>

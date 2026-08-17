@@ -8,6 +8,8 @@ export interface MessageActionsProps {
   disabled: boolean;
   onRetry: () => void;
   retryAvailable: boolean;
+  handoffAvailable?: boolean;
+  onHandoff?: () => void;
 }
 
 function receiptLine(receipt: ChatReceipt): string {
@@ -18,7 +20,7 @@ function receiptLine(receipt: ChatReceipt): string {
 }
 
 /** Hover/focus action row for assistant messages: copy, retry, truthful receipt chip. */
-export function MessageActions({ message, disabled, onRetry, retryAvailable }: MessageActionsProps) {
+export function MessageActions({ message, disabled, onRetry, retryAvailable, handoffAvailable, onHandoff }: MessageActionsProps) {
   const [copied, setCopied] = useState(false);
   const receipt = message.receipt;
 
@@ -40,6 +42,11 @@ export function MessageActions({ message, disabled, onRetry, retryAvailable }: M
       {retryAvailable && (
         <button type="button" className="link-btn" disabled={disabled} onClick={onRetry}>
           retry
+        </button>
+      )}
+      {handoffAvailable && onHandoff && (
+        <button type="button" className="link-btn" disabled={disabled} onClick={onHandoff}>
+          send to hive code
         </button>
       )}
       {receipt && <span className="receipt-chip">{receiptLine(receipt)}</span>}

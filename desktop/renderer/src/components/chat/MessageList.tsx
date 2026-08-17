@@ -8,10 +8,12 @@ export interface MessageListProps {
   messages: DesktopChatMessage[];
   disabled: boolean;
   onRetry: (content: string) => void;
+  onHandoff?: (messageId: string) => void;
+  handoffAvailable?: boolean;
 }
 
 /** Completed conversation messages, newest last, with hover actions on replies. */
-export function MessageList({ messages, disabled, onRetry }: MessageListProps) {
+export function MessageList({ messages, disabled, onRetry, onHandoff, handoffAvailable }: MessageListProps) {
   const rendered = useMemo(
     () =>
       messages.map((message, index) => {
@@ -25,12 +27,19 @@ export function MessageList({ messages, disabled, onRetry }: MessageListProps) {
             </header>
             <div className="message-body">{isUser ? <p>{message.content}</p> : renderMarkdown(message.content)}</div>
             {!isUser && (
-              <MessageActions message={message} disabled={disabled} onRetry={() => precedingUser && onRetry(precedingUser.content)} retryAvailable={Boolean(precedingUser)} />
+              <MessageActions
+                message={message}
+                disabled={disabled}
+                onRetry={() => precedingUser && onRetry(precedingUser.content)}
+                retryAvailable={Boolean(precedingUser)}
+                handoffAvailable={handoffAvailable}
+                onHandoff={onHandoff ? () => onHandoff(message.id) : undefined}
+              />
             )}
           </li>
         );
       }),
-    [messages, disabled, onRetry],
+    [messages, disabled, onRetry, onHandoff, handoffAvailable],
   );
   return <>{rendered}</>;
 }
