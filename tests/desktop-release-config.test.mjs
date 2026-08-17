@@ -26,5 +26,5 @@ test("desktop release scripts build both surfaces, smoke the package, and checks
     assert.equal(typeof pkg.scripts[script], "string", `${script} is missing`);
   }
   assert.match(pkg.scripts["desktop:e2e"], /playwright test/);
-  assert.match(pkg.scripts["desktop:dist"], /electron-builder/);
+  assert.match(pkg.scripts["desktop:dist"], /package-desktop\.mjs/);
 });
