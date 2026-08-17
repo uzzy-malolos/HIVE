@@ -12,14 +12,13 @@ import {
   normalizeChatRole,
   type ChatRoleSlug,
 } from "./roles.js";
-import type { ChatBindingRole, SubagentTask } from "../coding/types.js";
-import type { AgentCompletionClient } from "../coding/agent-loop.js";
-import { StructuredAgentLoop } from "../coding/agent-loop.js";
+import type { ChatBindingRole } from "../coding/types.js";
 import type { ChatMessage, ChatReceipt, ChatRoleSelection, ChatSessionRecord, SessionProviderOverride } from "./types.js";
-import { compactHistory } from "./history.js";
+import { compactHistory, HISTORY_CHAR_BUDGET } from "./history.js";
+export { HISTORY_CHAR_BUDGET };
 import { ChatSessionStore, newChatSessionId } from "./session-store.js";
 import { locateSkillRoot } from "./skill-locate.js";
-import { createReadOnlyToolExecutor, describeReadOnlyTools } from "./agent-tools.js";
+import { runChatAgentTurn } from "./agent-turn.js";
 import { buildScoutGrounding } from "./grounding.js";
 
 interface ResolvedTarget {
@@ -140,9 +139,6 @@ export function parseChatArgs(args: string[]): ParsedChatArgs {
   return parsed;
 }
 
-/** Rough per-turn budget for history that is sent to the model. */
-export const HISTORY_CHAR_BUDGET = 48_000;
-
 /**
  * Returns the most recent messages that together fit within `maxChars` total
  * content length, preserving order. Always keeps at least the newest message.
@@ -236,81 +232,19 @@ async function completeTurn(
   });
 }
 
-/** Agentic turn driven by StructuredAgentLoop with the engine as completion client. */
+/** Agentic turn driven by the shared read-only agent loop. */
 async function completeAgentTurn(input: TurnInput): Promise<{ output: string; receipt: ChatReceipt }> {
-  const binding = slugToBinding(input.role);
-  const persona = systemPromptFor(input.role, input.grounding);
-  const toolsDesc = describeReadOnlyTools();
-
-  let lastReceipt: ChatReceipt | undefined;
-  const completionClient: AgentCompletionClient = {
-    complete(request) {
-      const systemPrompt = [
-        persona,
-        toolsDesc,
-        "You may use tools to ground answers; you cannot modify anything.",
-        'Return exactly one JSON object per turn: {"done":false,"toolCalls":[{"id":"call-1","name":"read_file","arguments":{"path":"src/foo.ts"}}]}',
-        'or {"done":true,"summary":"..."}.',
-      ].join("\n");
-      return input.engine
-        .complete({
-          role: binding,
-          prompt: request.prompt,
-          systemPrompt,
-          providerId: request.providerId || input.override?.providerId,
-          model: request.model || input.override?.model,
-          signal: request.signal ?? input.signal,
-        })
-        .then((result) => {
-          lastReceipt = result.receipt;
-          return {
-            output: result.output,
-            usage: {
-              input: result.receipt.promptTokens,
-              output: result.receipt.completionTokens,
-              total: result.receipt.totalTokens,
-            },
-          };
-        });
-    },
-  };
-
-  const task: SubagentTask = {
-    id: `chat-${Date.now()}`,
-    sessionId: "",
-    role: "scout",
-    title: input.message,
-    objective: input.message,
-    status: "created",
-    providerId: input.override?.providerId ?? "",
-    model: input.override?.model,
-    dependencies: [],
-    fileScope: [],
-    expectedOutput: input.message,
-    completionCriteria: [],
-    validationCommands: [],
-    depth: 0,
-    attempt: 1,
-    maxAttempts: 1,
-    createdAt: new Date().toISOString(),
-  };
-
-  const agentCwd = input.cwd ?? process.cwd();
-  const loop = new StructuredAgentLoop();
-  const result = await loop.run({
-    task,
-    cwd: agentCwd,
-    sharedContext: renderHistory(compactHistory(input.history, HISTORY_CHAR_BUDGET).kept),
-    completionClient,
-    tools: createReadOnlyToolExecutor(agentCwd),
-    signal: input.signal ?? new AbortController().signal,
-    maxTurns: 8,
-    maxToolCalls: 24,
+  const result = await runChatAgentTurn({
+    cwd: input.cwd ?? process.cwd(),
+    engine: input.engine,
+    role: input.role,
+    message: input.message,
+    history: input.history,
+    override: input.override,
+    grounding: input.grounding,
+    signal: input.signal,
   });
-
-  const receipt: ChatReceipt =
-    lastReceipt ?? { role: input.role, providerId: "", model: "", degraded: false };
-  return { output: result.summary, receipt };
+  return { output: result.output, receipt: result.receipt };
 }
 
 function receiptTokens(receipt: ChatReceipt): number {

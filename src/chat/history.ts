@@ -1,5 +1,8 @@
 import type { ChatMessage } from "./types.js";
 
+/** Rough per-turn budget for history that is sent to the model. */
+export const HISTORY_CHAR_BUDGET = 48_000;
+
 /**
  * Rough per-message token estimate: tokens ≈ ceil(chars / 4). No tokenizer is
  * available in this runtime, so this is a stable, deterministic proxy used to
