@@ -20,12 +20,10 @@ export function MessageList({ messages, disabled, onRetry, onHandoff, handoffAva
         const isUser = message.role === "user";
         const precedingUser = !isUser ? [...messages.slice(0, index)].reverse().find((entry) => entry.role === "user") : undefined;
         return (
-          <li key={message.id} className={`message message-${message.role} anim-in`}>
-            <header>
-              <strong>{isUser ? "You" : "HIVE"}</strong>
-              <time dateTime={message.at}>{formatTime(message.at)}</time>
-            </header>
-            <div className="message-body">{isUser ? <p>{message.content}</p> : renderMarkdown(message.content)}</div>
+          <li key={message.id} className={`message message-${message.role} bubble-row anim-in`}>
+            {!isUser && <span className="assistant-mark" aria-hidden="true" title="HIVE" />}
+            <div className="message-bubble" title={formatTime(message.at)}>
+              <div className="message-body">{isUser ? <p>{message.content}</p> : renderMarkdown(message.content)}</div>
             {!isUser && (
               <MessageActions
                 message={message}
@@ -36,6 +34,7 @@ export function MessageList({ messages, disabled, onRetry, onHandoff, handoffAva
                 onHandoff={onHandoff ? () => onHandoff(message.id) : undefined}
               />
             )}
+            </div>
           </li>
         );
       }),

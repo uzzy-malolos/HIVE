@@ -1,0 +1,113 @@
+.hive-composer-container {
+  position: absolute;
+  bottom: 16px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  padding: 0 24px;
+  pointer-events: none;
+  z-index: 50;
+}
+
+.hive-composer-box {
+  width: 100%;
+  max-width: 780px;
+  background: var(--hive-bg-raised);
+  border: 1px solid var(--hive-border-strong);
+  border-radius: var(--hive-radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  pointer-events: auto;
+  transition: border-color 0.12s ease;
+}
+
+.hive-composer-box:focus-within {
+  border-color: rgba(124, 58, 237, 0.5);
+}
+
+.hive-composer-input {
+  width: 100%;
+  padding: 10px 14px 4px 14px;
+  color: var(--hive-text);
+  font-size: 13.5px;
+  line-height: 1.45;
+  resize: none;
+  min-height: 38px;
+  max-height: 160px;
+  background: transparent;
+  border: none;
+}
+
+.hive-composer-input::placeholder {
+  color: var(--hive-text-dim);
+}
+
+.hive-composer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px 8px 10px;
+}
+
+.hive-composer-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hive-composer-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: var(--hive-radius-sm);
+  background: var(--hive-bg-deep);
+  border: 1px solid var(--hive-border-subtle);
+  color: var(--hive-text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  transition: all 0.12s ease;
+}
+
+.hive-composer-btn:hover {
+  background: var(--hive-bg-hover);
+  color: var(--hive-text);
+  border-color: var(--hive-border-default);
+}
+
+.hive-composer-btn.is-icon {
+  width: 26px;
+  padding: 0;
+  justify-content: center;
+}
+
+.hive-composer-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hive-composer-send-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--hive-radius-sm);
+  background: var(--hive-violet);
+  color: #ffffff;
+  font-size: 14px;
+  transition: background 0.12s ease, opacity 0.12s ease;
+}
+
+.hive-composer-send-btn:hover:not(:disabled) {
+  background: var(--hive-violet-soft);
+}
+
+.hive-composer-send-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}

@@ -1,0 +1,181 @@
+.hive-code-layout {
+  display: flex;
+  flex: 1;
+  height: 100%;
+  overflow: hidden;
+  background: var(--hive-bg-base);
+}
+
+/* Center Agent Stage */
+.hive-code-center {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  height: 100%;
+  overflow: hidden;
+  position: relative;
+  background: var(--hive-bg-base);
+}
+
+/* Mission Header */
+.hive-mission-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 38px;
+  padding: 0 16px;
+  background: var(--hive-bg-raised);
+  border-bottom: 1px solid var(--hive-border-subtle);
+}
+
+.hive-mission-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.hive-mission-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--hive-violet-soft);
+  box-shadow: 0 0 6px var(--hive-violet-soft);
+}
+
+.hive-mission-title {
+  font-weight: 600;
+  color: var(--hive-text);
+}
+
+.hive-posture-selector {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--hive-bg-deep);
+  padding: 2px;
+  border-radius: var(--hive-radius-sm);
+  border: 1px solid var(--hive-border-subtle);
+}
+
+.hive-posture-btn {
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  color: var(--hive-text-dim);
+  transition: all 0.12s ease;
+}
+
+.hive-posture-btn:hover {
+  color: var(--hive-text);
+}
+
+.hive-posture-btn.is-active {
+  background: var(--hive-bg-raised);
+  color: var(--hive-text);
+  font-weight: 500;
+}
+
+/* Agent Turn Stream */
+.hive-code-stream {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px 120px 24px;
+  gap: 20px;
+}
+
+/* Compact Inline Agent Activity Rows */
+.hive-activity-block {
+  display: flex;
+  flex-direction: column;
+  padding: 12px 14px;
+  border-radius: var(--hive-radius-md);
+  background: var(--hive-bg-deep);
+  border: 1px solid var(--hive-border-subtle);
+  gap: 8px;
+  font-family: var(--hive-font-mono);
+  font-size: 11px;
+}
+
+.hive-activity-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--hive-text-secondary);
+}
+
+.hive-activity-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hive-activity-dot {
+  font-size: 10px;
+}
+
+.hive-activity-dot.is-done {
+  color: var(--hive-success);
+}
+
+.hive-activity-dot.is-active {
+  color: var(--hive-violet-soft);
+  animation: hive-pulse 1.5s infinite;
+}
+
+.hive-activity-dot.is-waiting {
+  color: var(--hive-text-dim);
+}
+
+.hive-activity-role {
+  font-weight: 600;
+  color: var(--hive-text);
+  min-width: 70px;
+}
+
+.hive-activity-detail {
+  color: var(--hive-text-secondary);
+}
+
+.hive-activity-time {
+  color: var(--hive-text-dim);
+}
+
+.hive-message-row {
+  display: flex;
+  width: 100%;
+}
+
+.hive-message-row.is-user {
+  justify-content: flex-end;
+}
+
+.hive-user-bubble {
+  max-width: 80%;
+  padding: 10px 14px;
+  border-radius: var(--hive-radius-md);
+  background: var(--hive-bg-raised);
+  border: 1px solid var(--hive-border-subtle);
+  color: var(--hive-text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.hive-assistant-flow {
+  display: flex;
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: var(--hive-radius-md);
+  background: var(--hive-bg-deep);
+  border: 1px solid var(--hive-border-subtle);
+  color: var(--hive-text);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.hive-assistant-body {
+  width: 100%;
+}
+

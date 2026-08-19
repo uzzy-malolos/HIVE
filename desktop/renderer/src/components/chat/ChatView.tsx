@@ -1,12 +1,19 @@
-import { useEffect, useState } from "react";
-import type { DesktopEvent } from "../../../../../src/desktop/types";
+import { useEffect, useMemo, useState } from "react";
+import type { DesktopEvent, DesktopModelInfo } from "../../../../../src/desktop/types";
 import type { DesktopCommandInput } from "../../bridge";
 import type { DesktopViewState } from "../../state";
 import { Dialog } from "../../Dialog";
+import { usePrefs } from "../../prefs";
 import { ChatComposer } from "./ChatComposer";
 import { ChatStream } from "./ChatStream";
 import { SessionRail } from "./SessionRail";
 import { Welcome } from "./Welcome";
+
+export interface GoalView {
+  text: string;
+  status: "active" | "paused" | "complete";
+  evidence?: string[];
+}
 
 export interface ChatViewProps {
   state: DesktopViewState;
@@ -14,11 +21,19 @@ export interface ChatViewProps {
   embedded?: boolean;
   onToggleLeftRail?: () => void;
   onHandoffToCoder?: (threadId: string) => void;
+  activeModelName?: string;
+  onSelectModel?: (model: string) => void;
+  goal?: GoalView | null;
+  onGoalChange?: (goal: GoalView | null) => void;
+  showComposer?: boolean;
+  onManageModels?: () => void;
+  availableModels?: Array<{ providerId: string; providerName: string; models: DesktopModelInfo[] }>;
 }
 
 /** Primary conversational surface: sessions rail + welcome or live conversation. */
-export function ChatView({ state, send, embedded = false, onToggleLeftRail, onHandoffToCoder }: ChatViewProps) {
-  const { chat } = state;
+export function ChatView({ state, send, embedded = false, onToggleLeftRail, onHandoffToCoder, activeModelName = "HIVE Auto", onSelectModel, goal = null, onGoalChange, showComposer = true, onManageModels, availableModels }: ChatViewProps) {
+  const { chat, modelsByProvider } = state;
+  const { prefs } = usePrefs();
   const active = chat.active;
   const streaming = active ? chat.streaming[active.id] : undefined;
   const failed = Boolean(active && chat.lastFailed?.conversationId === active.id);
@@ -31,6 +46,26 @@ export function ChatView({ state, send, embedded = false, onToggleLeftRail, onHa
   const [councilPreset, setCouncilPreset] = useState("standard");
   const [override, setOverride] = useState<{ providerId?: string; model?: string } | undefined>(undefined);
   const [handoffPending, setHandoffPending] = useState<string | null>(null);
+
+  const modelGroups = useMemo(() => {
+    if (availableModels) {
+      const enabledMap = prefs.enabledModels ?? {};
+      return availableModels
+        .map((group) => ({
+          ...group,
+          models: group.models.filter((model) => enabledMap[model.id] !== false),
+        }))
+        .filter((group) => group.models.length > 0);
+    }
+    const enabledMap = prefs.enabledModels ?? {};
+    return (state.providers || [])
+      .map((provider) => ({
+        providerId: provider.id,
+        providerName: provider.name,
+        models: (modelsByProvider[provider.id] || []).filter((model) => enabledMap[model.id] !== false),
+      }))
+      .filter((group) => group.models.length > 0);
+  }, [availableModels, state.providers, modelsByProvider, prefs.enabledModels]);
 
   // Conversation switches reset per-conversation composer state.
   useEffect(() => {
@@ -70,8 +105,33 @@ export function ChatView({ state, send, embedded = false, onToggleLeftRail, onHa
 
   async function sendMessage(): Promise<void> {
     if (!draft.trim()) return;
-    const content = draft.trim();
+    let content = draft.trim();
     setDraft("");
+
+    const goalCommand = content.match(/^\/goal(?:\s+(pause|resume|clear)|(?:\s+(.+)))?$/i);
+    if (goalCommand) {
+      const action = goalCommand[1]?.toLowerCase();
+      const objective = goalCommand[2]?.trim();
+      if (action === "pause" && goal) {
+        onGoalChange?.({ ...goal, status: "paused" });
+        return;
+      }
+      if (action === "resume" && goal) {
+        onGoalChange?.({ ...goal, status: "active" });
+        return;
+      }
+      if (action === "clear") {
+        onGoalChange?.(null);
+        return;
+      }
+      if (objective) {
+        onGoalChange?.({ text: objective, status: "active" });
+        setAgent(true);
+        content = objective;
+      } else {
+        return;
+      }
+    }
 
     let conversationId = active?.id;
     if (!conversationId) {
@@ -148,23 +208,24 @@ export function ChatView({ state, send, embedded = false, onToggleLeftRail, onHa
       )}
 
       <section className="chat-center" aria-label="Conversation">
-        {!active ? (
-          <Welcome
-            repositoryRoot={state.repositoryRoot}
-            routes={chat.routes}
-            send={send}
-            onPickRole={(role) => void pickRole(role)}
-            onPickSuggestion={(text) => void pickSuggestion(text)}
-          />
-        ) : (
-          <div className="chat-conversation">
-            <header className="chat-conversation-header">
-              <strong>{chat.conversations.find((entry) => entry.id === active.id)?.title ?? "Conversation"}</strong>
-              <span className="role-chip">[{roleChoice ?? active.role}]</span>
-              <button type="button" className="link-btn" onClick={() => void archiveConversation(active.id)}>
-                archive
+        <div className="chat-conversation">
+          <div className="chat-conversation-header workbench-chat-header">
+            <ModelChip label={activeModelName} onSelect={onSelectModel} onManageModels={onManageModels} groups={modelGroups} />
+            {active && (
+              <button type="button" className="link-btn archive-link" onClick={() => void archiveConversation(active.id)}>
+                Archive
               </button>
-            </header>
+            )}
+          </div>
+          {!active ? (
+            <Welcome
+              repositoryRoot={state.repositoryRoot}
+              routes={chat.routes}
+              send={send}
+              onPickRole={(role) => void pickRole(role)}
+              onPickSuggestion={(text) => void pickSuggestion(text)}
+            />
+          ) : (
             <ChatStream
               conversation={active}
               streaming={streaming}
@@ -177,32 +238,40 @@ export function ChatView({ state, send, embedded = false, onToggleLeftRail, onHa
               handoffAvailable={Boolean(state.repositoryRoot)}
               onHandoff={(messageId) => setHandoffPending(messageId)}
             />
-            <ChatComposer
-              conversation={active}
-              draft={draft}
-              setDraft={setDraft}
-              streaming={Boolean(streaming) || Boolean(chat.councilByConv[active.id] && !chat.councilByConv[active.id]!.summary && !chat.councilByConv[active.id]!.failed)}
-              providers={state.providers}
-              routes={chat.routes}
-              role={roleChoice ?? active.role}
-              onRoleChange={setRoleChoice}
-              ground={ground}
-              onGroundChange={setGround}
-              agent={agent}
-              onAgentChange={setAgent}
-              council={council}
-              onCouncilChange={setCouncil}
-              councilPreset={councilPreset}
-              onCouncilPresetChange={setCouncilPreset}
-              override={override}
-              onOverrideChange={setOverride}
-              send={send}
-              onSend={() => void sendMessage()}
-              onStop={() => void stopStreaming()}
-              failed={failed}
-            />
-          </div>
-        )}
+          )}
+          {showComposer && <ChatComposer
+            conversation={active ?? {
+              id: "draft",
+              cwd: state.repositoryRoot ?? "",
+              role: roleChoice ?? "auto",
+              ground,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+              messages: [],
+            }}
+            draft={draft}
+            setDraft={setDraft}
+            streaming={Boolean(streaming) || Boolean(active && chat.councilByConv[active.id] && !chat.councilByConv[active.id]!.summary && !chat.councilByConv[active.id]!.failed)}
+            providers={state.providers}
+            routes={chat.routes}
+            role={roleChoice ?? active?.role ?? "auto"}
+            onRoleChange={setRoleChoice}
+            ground={ground}
+            onGroundChange={setGround}
+            agent={agent}
+            onAgentChange={setAgent}
+            council={council}
+            onCouncilChange={setCouncil}
+            councilPreset={councilPreset}
+            onCouncilPresetChange={setCouncilPreset}
+            override={override}
+            onOverrideChange={setOverride}
+            send={send}
+            onSend={() => void sendMessage()}
+            onStop={() => void stopStreaming()}
+            failed={failed}
+          />}
+        </div>
       </section>
 
       {handoffPending && (
@@ -214,6 +283,103 @@ export function ChatView({ state, send, embedded = false, onToggleLeftRail, onHa
             <button type="button" onClick={() => void confirmHandoff()}>Send to Hive Code</button>
           </div>
         </Dialog>
+      )}
+    </div>
+  );
+}
+
+function formatContext(tokens?: number): string {
+  if (!tokens) return "";
+  if (tokens >= 1_000_000) return `${tokens % 1_000_000 === 0 ? tokens / 1_000_000 : (tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K`;
+  return `${tokens}`;
+}
+
+function ModelChip({
+  label,
+  onSelect,
+  onManageModels,
+  groups = [],
+}: {
+  label: string;
+  onSelect?: (model: string) => void;
+  onManageModels?: () => void;
+  groups?: Array<{ providerId: string; providerName: string; models: DesktopModelInfo[] }>;
+}) {
+  const [open, setOpen] = useState(false);
+  const baseOptions = [
+    { id: "auto", label: "HIVE Auto" },
+    { id: "council", label: "HIVE Council" },
+  ];
+
+  return (
+    <div className="gpt-model-selector-container">
+      <button
+        type="button"
+        className="gpt-model-dropdown-btn"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label="Select AI model"
+        onClick={() => setOpen((prev) => !prev)}
+      >
+        <span className="gpt-model-title">{label}</span>
+        <span aria-hidden="true">▾</span>
+      </button>
+      {open && (
+        <ul className="gpt-model-menu" role="listbox" aria-label="Available models">
+          {baseOptions.map((opt) => (
+            <li key={opt.id} role="option" aria-selected={label === opt.label}>
+              <button
+                type="button"
+                className="gpt-model-menu-item"
+                onClick={() => {
+                  onSelect?.(opt.label);
+                  setOpen(false);
+                }}
+              >
+                {opt.label}
+              </button>
+            </li>
+          ))}
+          {groups.flatMap((group) => [
+            <li key={`group-${group.providerId}`} className="model-menu-group" role="presentation">
+              <span className="model-menu-group-label">{group.providerName}</span>
+            </li>,
+            ...group.models.map((model) => {
+              const modelLabel = model.name || model.id;
+              const context = formatContext(model.contextWindow);
+              return (
+                <li key={`${group.providerId}:${model.id}`} role="option" aria-selected={label === modelLabel || label === model.id}>
+                  <button
+                    type="button"
+                    className="gpt-model-menu-item"
+                    onClick={() => {
+                      onSelect?.(modelLabel);
+                      setOpen(false);
+                    }}
+                  >
+                    <span className="model-menu-id">{model.id}</span>
+                    {context && <span className="model-context-badge">{context}</span>}
+                  </button>
+                </li>
+              );
+            }),
+          ])}
+          {onManageModels && (
+            <li role="option" aria-selected={false}>
+              <button
+                type="button"
+                className="gpt-model-menu-item"
+                onClick={() => {
+                  setOpen(false);
+                  onManageModels();
+                }}
+              >
+                Configure providers…
+              </button>
+            </li>
+          )}
+        </ul>
       )}
     </div>
   );

@@ -21,6 +21,16 @@ export interface ChatStreamProps {
 
 const NEAR_BOTTOM_PX = 80;
 
+function toolKind(name: string): string {
+  const value = name.toLowerCase();
+  if (value.includes("search") || value.includes("grep") || value.includes("glob")) return "Searched";
+  if (value.includes("read") || value.includes("list") || value.includes("stat")) return "Explored";
+  if (value.includes("write") || value.includes("create")) return "Wrote";
+  if (value.includes("edit") || value.includes("patch") || value.includes("apply")) return "Updated";
+  if (value.includes("run") || value.includes("exec") || value.includes("command") || value.includes("bash")) return "Ran";
+  return "Used";
+}
+
 /** Streaming conversation surface: log role, live markdown, caret, stick-to-bottom scroll. */
 export function ChatStream({ conversation, streaming, route, councilRun, repositoryRoot, disabled, onRetry, onOpenArtifacts, onHandoff, handoffAvailable }: ChatStreamProps) {
   const scrollRef = useRef<HTMLOListElement>(null);
@@ -38,23 +48,25 @@ export function ChatStream({ conversation, streaming, route, councilRun, reposit
     <ol className="chat-messages" role="log" aria-live="polite" aria-label="Conversation messages" ref={scrollRef}>
       <MessageList messages={conversation.messages} disabled={disabled} onRetry={onRetry} onHandoff={onHandoff} handoffAvailable={handoffAvailable} />
       {councilRun && (
-        <li className="message message-assistant council-message">
-          <header>
-            <strong>HIVE Council</strong>
-          </header>
-          <CouncilTranscript run={councilRun} repositoryRoot={repositoryRoot} onOpenArtifacts={onOpenArtifacts} />
+        <li className="message message-assistant council-message bubble-row">
+          <span className="assistant-mark" aria-hidden="true" />
+          <div className="message-bubble">
+            <CouncilTranscript run={councilRun} repositoryRoot={repositoryRoot} onOpenArtifacts={onOpenArtifacts} />
+          </div>
         </li>
       )}
       {streaming && (
-        <li className="message message-assistant message-streaming anim-in">
-          <header>
-            <strong>HIVE</strong>
-          </header>
+        <li className="message message-assistant message-streaming bubble-row anim-in">
+          <span className="assistant-mark" aria-hidden="true" />
+          <div className="message-bubble">
           <div className="message-body">
             {tools.length > 0 && (
-              <ul className="agent-tool-strip" aria-label="HiveBot tool activity">
+              <ul className="agent-tool-strip harness-tool-cards" aria-label="HiveBot tool activity">
                 {tools.map((tool, index) => (
-                  <li key={`${tool.name}-${index}`} className="agent-tool-chip anim-in">[{tool.label}]</li>
+                  <li key={`${tool.name}-${index}`} className="harness-tool-card anim-in">
+                    <span className="harness-tool-kind">{toolKind(tool.name)}</span>
+                    <span className="harness-tool-label">[{tool.label}]</span>
+                  </li>
                 ))}
               </ul>
             )}
@@ -66,6 +78,7 @@ export function ChatStream({ conversation, streaming, route, councilRun, reposit
             ) : tools.length === 0 ? (
               <TypingLoader role={conversation.role} route={route} />
             ) : null}
+          </div>
           </div>
         </li>
       )}

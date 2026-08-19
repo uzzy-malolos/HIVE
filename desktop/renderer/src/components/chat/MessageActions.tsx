@@ -45,8 +45,8 @@ export function MessageActions({ message, disabled, onRetry, retryAvailable, han
         </button>
       )}
       {handoffAvailable && onHandoff && (
-        <button type="button" className="link-btn" disabled={disabled} onClick={onHandoff}>
-          send to hive code
+        <button type="button" className="link-btn" disabled={disabled} onClick={onHandoff} aria-label="send to hive code">
+          Run in workspace
         </button>
       )}
       {receipt && <span className="receipt-chip">{receiptLine(receipt)}</span>}

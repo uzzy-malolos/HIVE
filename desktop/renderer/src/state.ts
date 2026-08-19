@@ -1,12 +1,13 @@
 import type { CodingFinalReport, RuntimeEvent } from "../../../src/coding/types";
 import type {
-  DesktopChangesDiff, DesktopChatConversation, DesktopChatSummary, DesktopEvent, DesktopProviderMetadata, DesktopRecentRepository,
-  GuardedGitActionPreview, GuardedGitStatus, ThreadRecordV1, ThreadRunRef,
+  DesktopChangesDiff, DesktopChatConversation, DesktopChatSummary, DesktopEvent, DesktopModelInfo, DesktopProviderMetadata, DesktopRecentRepository,
+  GuardedGitActionPreview, GuardedGitStatus, ThreadRecordV1, ThreadRunRef, WorkspaceFilePreview, WorkspaceTreeListing,
 } from "../../../src/desktop/types";
 import type { ChatReceipt } from "../../../src/chat/types";
 
 export type CenterTab = "conversation" | "changes" | "report";
-export type DesktopMode = "chat" | "coder";
+export type DesktopMode = "chat" | "coder" | "split" | "settings" | "usage" | "runs";
+export type WorkspaceSurface = DesktopMode;
 export type DesktopUiAction =
   | { type: "ui.tab"; tab: CenterTab }
   | { type: "ui.dismiss-error" }
@@ -14,7 +15,9 @@ export type DesktopUiAction =
   | { type: "ui.repository-opening" }
   | { type: "ui.rails"; side: "left" | "right" }
   | { type: "ui.rails.set"; rails: { left: boolean; right: boolean } }
-  | { type: "ui.mode"; mode: DesktopMode };
+  | { type: "ui.mode"; mode: DesktopMode }
+  | { type: "ui.preview-file"; path: string | null }
+  | { type: "ui.panel"; panel: "tree" | "terminal" };
 export type WorkerState = "idle" | "starting" | "running" | "stopped" | "failed";
 
 /** Resolved provider route for a chat role, for trust chips and pickers. */
@@ -77,6 +80,7 @@ export interface DesktopViewState {
   shellViews: ("chat" | "coder")[];
   providers: DesktopProviderMetadata[];
   selectedProviderId: string;
+  modelsByProvider: Record<string, DesktopModelInfo[]>;
   runtimeEvents: RuntimeEvent[];
   run: ThreadRunRef | null;
   pausingSessionId: string | null;
@@ -87,6 +91,11 @@ export interface DesktopViewState {
   reports: Record<string, CodingFinalReport | null>;
   preview: GuardedGitActionPreview | null;
   rails: { left: boolean; right: boolean };
+  showFileTree: boolean;
+  showTerminal: boolean;
+  workspaceListings: Record<string, WorkspaceTreeListing>;
+  workspaceFile: WorkspaceFilePreview | null;
+  selectedWorkspacePath: string | null;
   error: string | null;
   notice: string | null;
 }
@@ -99,11 +108,12 @@ export function initialDesktopState(): DesktopViewState {
     activeThreadId: null,
     selectedSessionId: null,
     tab: "conversation",
-    mode: "coder",
+    mode: "chat",
     chat: initialChatState(),
     shellViews: ["chat"],
     providers: [],
     selectedProviderId: "",
+    modelsByProvider: {},
     runtimeEvents: [],
     run: null,
     pausingSessionId: null,
@@ -113,7 +123,12 @@ export function initialDesktopState(): DesktopViewState {
     diff: null,
     reports: {},
     preview: null,
-    rails: { left: true, right: true },
+    rails: { left: true, right: false },
+    showFileTree: true,
+    showTerminal: true,
+    workspaceListings: {},
+    workspaceFile: null,
+    selectedWorkspacePath: null,
     error: null,
     notice: null,
   };
@@ -127,14 +142,21 @@ export function reduceDesktopEvent(state: DesktopViewState, event: DesktopEvent 
     case "ui.rails": return { ...state, rails: { ...state.rails, [event.side]: !state.rails[event.side] } };
     case "ui.rails.set": return { ...state, rails: event.rails };
     case "ui.mode": return { ...state, mode: event.mode };
-    case "ui.repository-opening": return { ...state, repositoryRoot: null, threads: [], activeThreadId: null, selectedSessionId: null, runtimeEvents: [], run: null, pausingSessionId: null, pausingRequestId: null, worker: "idle", gitStatus: null, diff: null, reports: {}, preview: null, chat: initialChatState(), error: null, notice: null };
+    case "ui.preview-file": return { ...state, selectedWorkspacePath: event.path };
+    case "ui.panel": return event.panel === "tree"
+      ? { ...state, showFileTree: !state.showFileTree }
+      : { ...state, showTerminal: !state.showTerminal };
+    case "ui.repository-opening": return { ...state, repositoryRoot: null, threads: [], activeThreadId: null, selectedSessionId: null, runtimeEvents: [], run: null, pausingSessionId: null, pausingRequestId: null, worker: "idle", gitStatus: null, diff: null, reports: {}, preview: null, chat: initialChatState(), workspaceListings: {}, workspaceFile: null, selectedWorkspacePath: null, error: null, notice: null };
     case "request.failed": {
       const failedPause = Boolean(state.pausingRequestId && event.requestId === state.pausingRequestId);
       return { ...state, pausingSessionId: failedPause ? null : state.pausingSessionId, pausingRequestId: failedPause ? null : state.pausingRequestId, error: event.message, notice: null };
     }
     case "request.completed": return { ...state, notice: "Command completed.", error: null };
     case "repository.listed": return { ...state, repositories: event.repositories, error: null };
-    case "desktop.ready": return { ...state, repositoryRoot: event.repositoryRoot, activeThreadId: null, selectedSessionId: null, threads: [], runtimeEvents: [], run: null, pausingSessionId: null, pausingRequestId: null, worker: "idle", gitStatus: null, diff: null, reports: {}, preview: null, chat: initialChatState(), error: null, notice: null };
+    case "desktop.ready": {
+      if (state.repositoryRoot && event.repositoryRoot && state.repositoryRoot.toLowerCase() === event.repositoryRoot.toLowerCase()) return state;
+      return { ...state, repositoryRoot: event.repositoryRoot, activeThreadId: null, selectedSessionId: null, threads: [], runtimeEvents: [], run: null, pausingSessionId: null, pausingRequestId: null, worker: "idle", gitStatus: null, diff: null, reports: {}, preview: null, chat: initialChatState(), workspaceListings: {}, workspaceFile: null, selectedWorkspacePath: null, error: null, notice: null };
+    }
     case "thread.listed": return { ...state, threads: [...event.threads].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), error: null };
     case "thread.changed": {
       const threads = [event.thread, ...state.threads.filter((thread) => thread.id !== event.thread.id)].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -176,6 +198,7 @@ export function reduceDesktopEvent(state: DesktopViewState, event: DesktopEvent 
     }
     case "provider.listed": return { ...state, providers: event.providers, selectedProviderId: state.selectedProviderId || event.providers.find((provider) => provider.configured)?.id || "", error: null };
     case "provider.changed": return { ...state, providers: [event.provider, ...state.providers.filter((provider) => provider.id !== event.provider.id)], selectedProviderId: event.provider.id, error: null };
+    case "models.listed": return { ...state, modelsByProvider: { ...state.modelsByProvider, [event.providerId]: event.models }, error: null };
     case "git.changed": return { ...state, gitStatus: event.status, error: null };
     case "changes.diffed": if (state.selectedSessionId !== event.diff.codingSessionId) return state; return { ...state, diff: event.diff, error: null };
     case "git.previewed": return { ...state, preview: event.preview, error: null };
@@ -184,7 +207,18 @@ export function reduceDesktopEvent(state: DesktopViewState, event: DesktopEvent 
     case "credential.changed": return { ...state, notice: event.credential.configured ? "Credential encrypted and stored." : "Credential removed.", error: null };
     case "credential.listed": return state;
     case "chat.listed": return { ...state, chat: { ...state.chat, conversations: event.conversations }, error: null };
-    case "chat.changed": return { ...state, chat: { ...state.chat, active: event.conversation, activeId: event.conversation.id }, error: null };
+    case "chat.changed": {
+      const firstUser = event.conversation.messages.find((message) => message.role === "user")?.content ?? "";
+      const summary = {
+        id: event.conversation.id,
+        title: firstUser.slice(0, 80) || "New task",
+        role: event.conversation.role,
+        updatedAt: event.conversation.updatedAt,
+        messageCount: event.conversation.messages.length,
+      };
+      const conversations = [summary, ...state.chat.conversations.filter((entry) => entry.id !== event.conversation.id)];
+      return { ...state, chat: { ...state.chat, conversations, active: event.conversation, activeId: event.conversation.id }, error: null };
+    }
     case "chat.started": return { ...state, chat: { ...state.chat, streaming: { ...state.chat.streaming, [event.conversationId]: { turnId: event.turnId, text: "", tools: [] } }, lastFailed: null }, error: null };
     case "chat.chunk": {
       const stream = state.chat.streaming[event.conversationId];
@@ -230,6 +264,12 @@ export function reduceDesktopEvent(state: DesktopViewState, event: DesktopEvent 
       return { ...state, chat: { ...state.chat, councilByConv: { ...state.chat.councilByConv, [conversationId]: { ...run, failed: event.message } } }, error: event.message };
     }
     case "shell.views": return { ...state, shellViews: event.views };
+    case "workspace.listed": {
+      const key = event.listing.path;
+      return { ...state, workspaceListings: { ...state.workspaceListings, [key]: event.listing }, error: null };
+    }
+    case "workspace.file": return { ...state, workspaceFile: event.file, selectedWorkspacePath: event.file.path, error: null };
+    case "workspace.picked": return state;
   }
 }
 

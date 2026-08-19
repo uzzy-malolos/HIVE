@@ -4,12 +4,18 @@ import type { HiveDesktopBridge } from "./bridge";
 import { installedBridge, type DesktopCommandInput } from "./bridge";
 import { CommandPalette, PaletteCommand } from "./components/CommandPalette";
 import { ConfirmationDialog } from "./components/ConfirmationDialog";
-import { DualCockpit } from "./components/DualCockpit";
 import { ProviderDialog } from "./components/ProviderDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { SettingsSurface } from "./components/settings/SettingsSurface";
+import { UsageSurface } from "./components/usage/UsageSurface";
+import { SplitWorkspace } from "./components/SplitWorkspace";
+import { CodexSurface } from "./components/codex/CodexSurface";
 import { ShortcutHelp } from "./components/ShortcutHelp";
 import { Toast, ToastItem } from "./components/Toast";
-import { TopBar } from "./components/TopBar";
+import { ChatSurface } from "./components/chat/ChatSurface";
+import { Shell } from "./shell/Shell";
+import type { SidebarSession } from "./shell/Sidebar";
+import type { WorkspaceTab } from "./shell/WorkspaceTabs";
 import { notifyRunCompleted } from "./notifications";
 import { usePrefs } from "./prefs";
 import { initialDesktopState, latestRun, reduceDesktopEvent, type CenterTab, type DesktopMode } from "./state";
@@ -31,9 +37,23 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
 
   const [providerDialog, setProviderDialog] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<"general" | "models" | "catalog">("general");
+  const [modelsLoading, setModelsLoading] = useState<Record<string, boolean>>({});
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const [stickyError, setStickyError] = useState<string | null>(null);
+
+  async function fetchModels(providerId: string): Promise<void> {
+    setModelsLoading((prev) => ({ ...prev, [providerId]: true }));
+    try {
+      await send({ type: "models.list", providerId });
+    } catch {
+      // send() already surfaces request.failed when the bridge returns a typed failure
+    } finally {
+      setModelsLoading((prev) => ({ ...prev, [providerId]: false }));
+    }
+  }
 
   const [credential, setCredential] = useState("");
   const credentialRef = useRef("");
@@ -41,6 +61,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
   const tabRefs = useRef<Record<CenterTab, HTMLButtonElement | null>>({ conversation: null, changes: null, report: null });
   const repositoryRef = useRef<string | null>(null);
   const openEpochRef = useRef(0);
+  const chatRequestIds = useRef(new Set<string>());
 
   const splitRatio = prefs.splitRatio ?? 0.4;
 
@@ -52,21 +73,33 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
     }
   }, [prefs.density, prefs.accent]);
 
-  // Sync initial rails preference
   useEffect(() => {
     if (prefs.rails) {
       dispatch({ type: "ui.rails.set", rails: prefs.rails });
+    }
+    if (prefs.mode) {
+      dispatch({ type: "ui.mode", mode: prefs.mode });
     }
   }, []);
 
   const send = async (command: DesktopCommandInput, scope?: { epoch?: number; repositoryRoot?: string }): Promise<DesktopEvent> => {
     const requestId = command.requestId ?? identifier("request");
+    if (command.type === "chat.send" || command.type === "chat.create" || command.type === "chat.cancel") {
+      chatRequestIds.current.add(requestId);
+    }
     const expectedEpoch = scope?.epoch ?? openEpochRef.current;
     const event = await api.request({ ...command, requestId } as DesktopCommand);
     if (expectedEpoch !== openEpochRef.current) return { type: "request.failed", timestamp: new Date().toISOString(), requestId, message: "Request superseded by a repository switch.", recoverable: true };
     if (scope?.repositoryRoot && event.repositoryRoot && event.repositoryRoot.toLowerCase() !== scope.repositoryRoot.toLowerCase()) return event;
     if (!scope?.epoch && event.repositoryRoot && (!repositoryRef.current || event.repositoryRoot.toLowerCase() !== repositoryRef.current.toLowerCase())) return event;
     dispatch(event);
+    if (event.type === "request.failed" && command.type !== "chat.send" && command.type !== "chat.create") {
+      setStickyError(event.message);
+    } else if (event.type === "worker.failed") {
+      setStickyError(event.message);
+    } else if (event.type === "desktop.ready" || event.type === "chat.started" || event.type === "chat.completed") {
+      setStickyError(null);
+    }
     return event;
   };
 
@@ -75,9 +108,24 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
 
   useEffect(() => {
     const unsubscribe = api.subscribe((event) => {
-      if (event.type === "desktop.ready") return;
+      if (event.type === "desktop.ready" && !repositoryRef.current) {
+        repositoryRef.current = event.repositoryRoot ?? null;
+        dispatch(event);
+        return;
+      }
       if (event.repositoryRoot && (!repositoryRef.current || event.repositoryRoot.toLowerCase() !== repositoryRef.current.toLowerCase())) return;
       dispatch(event);
+      if (event.type === "request.failed") {
+        if (event.requestId && chatRequestIds.current.has(event.requestId)) {
+          chatRequestIds.current.delete(event.requestId);
+        } else {
+          setStickyError(event.message);
+        }
+      } else if (event.type === "worker.failed") {
+        setStickyError(event.message);
+      } else if (event.type === "chat.started" || event.type === "chat.completed") {
+        setStickyError(null);
+      }
 
       // Presence & Toast on run completion
       if (event.type === "run.changed" && terminalStatuses.has(event.run.status)) {
@@ -96,6 +144,8 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
       }
     });
     void send({ type: "repository.list" });
+    void send({ type: "chat.list" });
+    void send({ type: "provider.list" });
     return unsubscribe;
   }, [api]);
 
@@ -109,6 +159,53 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
   const sessionId = currentRun?.codingSessionId;
   const report = sessionId ? state.reports[sessionId] : null;
   const modalOpen = Boolean(state.preview || providerDialog || settingsOpen || paletteOpen || shortcutHelpOpen);
+
+  // --- Shell-derived navigation/tabs -------------------------------------------------
+  const openSettingsModels = () => { setSettingsTab("models"); setSettingsOpen(true); };
+
+  const recentSessions: SidebarSession[] = useMemo(() => {
+    const list: SidebarSession[] = [];
+    for (const conv of state.chat.conversations) {
+      if (conv.archived) continue;
+      list.push({ id: `chat-${conv.id}`, title: conv.title || "Conversation", kind: "chat", active: conv.id === state.chat.activeId });
+    }
+    for (const thread of state.threads) {
+      if (thread.archived) continue;
+      list.push({ id: `thread-${thread.id}`, title: thread.title, kind: "coder", active: thread.id === state.activeThreadId });
+    }
+    list.sort((a, b) => (a.active === b.active ? b.title.localeCompare(a.title) : (a.active ? -1 : 1)));
+    return list.slice(0, 8);
+  }, [state.chat.conversations, state.chat.activeId, state.threads, state.activeThreadId]);
+
+  const sessionTabs: WorkspaceTab[] = recentSessions.slice(0, 4).map((s) => ({ id: s.id, label: s.title, kind: s.kind }));
+  const activeTabId = state.mode === "chat"
+    ? (state.chat.activeId ? `chat-${state.chat.activeId}` : null)
+    : (state.activeThreadId ? `thread-${state.activeThreadId}` : null);
+
+  const handleSelectSession = (id: string): void => {
+    if (id.startsWith("chat-")) {
+      const conversationId = id.slice("chat-".length);
+      void send({ type: "chat.load", conversationId });
+      dispatch({ type: "ui.mode", mode: "chat" });
+    } else if (id.startsWith("thread-")) {
+      const thread = state.threads.find((entry) => entry.id === id.slice("thread-".length));
+      if (thread) void loadThread(thread);
+      dispatch({ type: "ui.mode", mode: "coder" });
+    }
+  };
+
+  const handleNewTask = async (): Promise<void> => {
+    dispatch({ type: "ui.mode", mode: "chat" });
+    await send({ type: "chat.create", input: {} });
+  };
+
+  const shellStatus = [
+    state.repositoryRoot
+      ? { label: state.repositoryRoot.split(/[\\/]/).filter(Boolean).at(-1) ?? state.repositoryRoot }
+      : { label: "No workspace" },
+    { label: state.mode === "chat" ? "HiveChat" : "Hive Code", emphasis: true },
+    { label: activeModelName },
+  ];
 
   async function openRepository(root: string): Promise<void> {
     const value = root.trim(); if (!value) return;
@@ -127,6 +224,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
           send({ type: "provider.list" }, { epoch }),
           send({ type: "git.inspect", repositoryRoot: ready.repositoryRoot }, { epoch, repositoryRoot: ready.repositoryRoot }),
           send({ type: "chat.list" }, { epoch }),
+          send({ type: "workspace.list", input: { repositoryRoot: ready.repositoryRoot } }, { epoch, repositoryRoot: ready.repositoryRoot }),
         ]);
       }
     } finally { if (epoch === openEpochRef.current) setBusy(false); }
@@ -211,18 +309,25 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
 
   async function storeCredential(event: FormEvent, kind: DesktopCredentialKind, configuration: DesktopProviderConfigurationInput): Promise<void> {
     event.preventDefault(); if (!state.selectedProviderId || !credential) return;
-    const input = { providerId: state.selectedProviderId, kind, secret: credentialRef.current };
+    const providerId = state.selectedProviderId;
+    const input = { providerId, kind, secret: credentialRef.current };
     try {
       const configured = await send({ type: "provider.configure", input: configuration });
       if (configured.type === "request.failed") return;
-      await send({ type: "credential.set", input });
+      const setCred = await send({ type: "credential.set", input });
+      if (setCred.type !== "request.failed") {
+        await fetchModels(providerId);
+      }
     }
     finally { input.secret = ""; closeProviderDialog(); }
   }
 
   async function approveProvider(provider: DesktopProviderMetadata): Promise<void> {
     const configured = await send({ type: "provider.configure", input: { id: provider.id, name: provider.name, kind: provider.kind, authType: provider.authType, ...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}), ...(provider.defaultModel ? { defaultModel: provider.defaultModel } : {}), approved: true } });
-    if (configured.type !== "request.failed") closeProviderDialog();
+    if (configured.type !== "request.failed") {
+      closeProviderDialog();
+      await fetchModels(provider.id);
+    }
   }
 
   const toggleRail = (side: "left" | "right") => {
@@ -274,6 +379,26 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
       run: () => toggleRail("left"),
     });
 
+    list.push({
+      id: "surface-chat",
+      label: "Switch to Chat surface",
+      hint: "Surface",
+      run: () => {
+        dispatch({ type: "ui.mode", mode: "chat" });
+        updatePrefs({ mode: "chat" });
+      },
+    });
+
+    list.push({
+      id: "surface-codex",
+      label: "Switch to Codex workspace",
+      hint: "Surface",
+      run: () => {
+        dispatch({ type: "ui.mode", mode: "coder" });
+        updatePrefs({ mode: "coder" });
+      },
+    });
+
     if (activeRun) {
       list.push({
         id: "run-pause",
@@ -298,9 +423,21 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
     });
     list.push({
       id: "open-settings",
-      label: "Open Preferences & Accessibility",
+      label: "Open Settings",
       hint: "[*]",
-      run: () => setSettingsOpen(true),
+      run: () => {
+        setSettingsTab("models");
+        setSettingsOpen(true);
+      },
+    });
+    list.push({
+      id: "configure-providers",
+      label: "Configure providers",
+      hint: "API keys",
+      run: () => {
+        setSettingsTab("models");
+        setSettingsOpen(true);
+      },
     });
 
     return list;
@@ -363,69 +500,137 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
   return (
     <div className="app-shell dual-shell" data-density={prefs.density ?? "comfortable"} data-accent={prefs.accent ?? "vivid"}>
       <a className="skip-link" href="#main-workspace">Skip to workspace</a>
-      <TopBar
-        worker={state.worker}
-        modalOpen={modalOpen}
-        activeRun={Boolean(repositoryActiveRun)}
-        repositoryRoot={state.repositoryRoot}
-        activeModelName={activeModelName}
-        onSelectModel={setActiveModelName}
-        onToggleLeftRail={() => toggleRail("left")}
-        onOpenSettings={() => setSettingsOpen(true)}
-      />
-
-      <DualCockpit
-        state={state}
-        modalOpen={modalOpen}
-        send={send}
+      <Shell
+        mode={state.mode}
+        onSelectMode={(mode) => {
+          dispatch({ type: "ui.mode", mode });
+          updatePrefs({ mode });
+        }}
+        onCreateTask={handleNewTask}
+        sessions={recentSessions}
+        onSelectSession={handleSelectSession}
         repositoryPath={repositoryPath}
         setRepositoryPath={setRepositoryPath}
-        busy={busy}
-        activeThread={activeThread}
-        activeRun={activeRun}
-        currentRun={currentRun}
-        repositoryActiveRun={repositoryActiveRun}
-        report={report}
-        sessionId={sessionId}
-        composer={composer}
-        setComposer={setComposer}
-        saving={saving}
-        retryMessageId={retryMessageId}
-        newThreadTitle={newThreadTitle}
-        setNewThreadTitle={setNewThreadTitle}
-        splitRatio={splitRatio}
-        onSplitRatioChange={handleSplitRatioChange}
-        mainRef={mainRef}
-        tabRefs={tabRefs}
         onOpenRepository={openRepository}
-        onCreateThread={createThread}
-        onLoadThread={loadThread}
-        onArchiveThread={(threadId) => send({ type: "thread.archive", threadId }).then(() => {})}
-        onChooseTab={chooseTab}
-        onRetryRun={retryRun}
-        onSubmitMessage={submitMessage}
-        onClearCredential={clearCredential}
-        onProviderChange={(event) => {
-          clearCredential();
-          dispatch({
-            type: "provider.changed",
-            timestamp: new Date().toISOString(),
-            provider: state.providers.find((provider) => provider.id === event.target.value)!,
-          });
-        }}
-        onOpenProviderDialog={() => {
-          clearCredential();
-          setProviderDialog(true);
-        }}
-        onRunAction={runAction}
-        onPreviewGit={previewGit}
-        onSendExternal={(command) => send(command)}
-        onToggleLeftRail={() => toggleRail("left")}
-        onOpenSettings={() => setSettingsOpen(true)}
-        onHandoffToCoder={(threadId) => {
-          void send({ type: "thread.load", threadId });
-        }}
-      />
+        busy={busy}
+        projectName={repositoryPath ? repositoryPath.split(/[\\/]/).filter(Boolean).at(-1) ?? "HIVE" : "HIVE"}
+        sessionTabs={sessionTabs}
+        activeTabId={activeTabId}
+        onSelectTab={handleSelectSession}
+        onNewTab={handleNewTask}
+        activeModelName={activeModelName}
+        onOpenModelPicker={() => { setSettingsTab("catalog"); setSettingsOpen(true); }}
+        onOpenSettings={() => { setSettingsTab("models"); setSettingsOpen(true); }}
+        onOpenUsage={() => dispatch({ type: "ui.mode", mode: "usage" })}
+        worker={state.worker}
+        status={shellStatus}
+      >
+        {state.mode === "chat" ? (
+          <ChatSurface
+            state={state}
+            send={send}
+            activeModelName={activeModelName}
+            onOpenModelPicker={() => { setSettingsTab("catalog"); setSettingsOpen(true); }}
+            onOpenSettings={() => dispatch({ type: "ui.mode", mode: "settings" })}
+            onHandoffToCoder={() => dispatch({ type: "ui.mode", mode: "coder" })}
+          />
+        ) : state.mode === "split" ? (
+          <SplitWorkspace
+            state={state}
+            send={send}
+            activeModelName={activeModelName}
+            onOpenModelPicker={() => { setSettingsTab("catalog"); setSettingsOpen(true); }}
+            onOpenSettings={() => dispatch({ type: "ui.mode", mode: "settings" })}
+            onOpenRepositoryPicker={async () => {
+              const picked = await send({ type: "workspace.pick" });
+              if (picked.type === "workspace.picked" && picked.path) await openRepository(picked.path);
+            }}
+            onSelectFile={async (filePath) => {
+              if (!state.repositoryRoot) return;
+              dispatch({ type: "ui.preview-file", path: filePath });
+              await send({ type: "workspace.read", input: { repositoryRoot: state.repositoryRoot, path: filePath } });
+            }}
+            onToggleDir={async (dirPath) => {
+              if (!state.repositoryRoot || state.workspaceListings[dirPath]) return;
+              await send({ type: "workspace.list", input: { repositoryRoot: state.repositoryRoot, path: dirPath } });
+            }}
+            onPreviewGit={previewGit}
+            onLoadThread={async (threadId) => {
+              const t = state.threads.find((entry) => entry.id === threadId);
+              if (t) void loadThread(t);
+            }}
+            onHandoffToCoder={() => dispatch({ type: "ui.mode", mode: "coder" })}
+          />
+        ) : state.mode === "settings" ? (
+          <SettingsSurface
+            providers={state.providers}
+            modelsByProvider={state.modelsByProvider}
+            modelsLoading={modelsLoading}
+            onFetchModels={fetchModels}
+            onConfigureProvider={(providerId) => {
+              const provider = state.providers.find((entry) => entry.id === providerId);
+              if (provider) {
+                clearCredential();
+                dispatch({ type: "provider.changed", timestamp: new Date().toISOString(), provider });
+                setProviderDialog(true);
+              }
+            }}
+            onAddCompatibleProvider={async (input) => {
+              const configured = await send({
+                type: "provider.configure",
+                input: {
+                  id: input.id,
+                  name: input.name,
+                  kind: "openai-compatible",
+                  authType: "api-key",
+                  baseUrl: input.baseUrl,
+                  defaultModel: input.defaultModel,
+                  approved: true,
+                },
+              });
+              if (configured.type !== "request.failed") {
+                clearCredential();
+                setProviderDialog(true);
+              }
+            }}
+          />
+        ) : state.mode === "usage" ? (
+          <UsageSurface
+            threads={state.threads}
+            conversations={state.chat.conversations}
+            reports={state.reports}
+          />
+        ) : (
+          <CodexSurface
+            state={state}
+            send={send}
+            activeModelName={activeModelName}
+            onOpenModelPicker={() => { setSettingsTab("catalog"); setSettingsOpen(true); }}
+            onOpenSettings={() => dispatch({ type: "ui.mode", mode: "settings" })}
+            onOpenRepositoryPicker={async () => {
+              const picked = await send({ type: "workspace.pick" });
+              if (picked.type === "workspace.picked" && picked.path) await openRepository(picked.path);
+            }}
+            onSelectFile={async (filePath) => {
+              if (!state.repositoryRoot) return;
+              dispatch({ type: "ui.preview-file", path: filePath });
+              await send({ type: "workspace.read", input: { repositoryRoot: state.repositoryRoot, path: filePath } });
+              if (sessionId && state.diff?.recordedFiles.includes(filePath)) {
+                await send({ type: "changes.diff", input: { repositoryRoot: state.repositoryRoot, codingSessionId: sessionId } });
+              }
+            }}
+            onToggleDir={async (dirPath) => {
+              if (!state.repositoryRoot || state.workspaceListings[dirPath]) return;
+              await send({ type: "workspace.list", input: { repositoryRoot: state.repositoryRoot, path: dirPath } });
+            }}
+            onPreviewGit={previewGit}
+            onLoadThread={async (threadId) => {
+              const t = state.threads.find((entry) => entry.id === threadId);
+              if (t) void loadThread(t);
+            }}
+          />
+        )}
+      </Shell>
 
       <Toast toasts={toasts} onDismiss={(id) => setToasts((prev) => prev.filter((t) => t.id !== id))} />
 
@@ -433,10 +638,19 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
         {saving ? "Saving message..." : state.notice}
       </div>
 
-      {state.error && (
+      {stickyError && (
         <div className="error-toast" role="alert">
-          <span>{state.error}</span>
-          <button aria-label="Dismiss error" onClick={() => dispatch({ type: "ui.dismiss-error" })}>x</button>
+          <span>{stickyError}</span>
+          <button
+            type="button"
+            aria-label="Dismiss error"
+            onClick={() => {
+              setStickyError(null);
+              dispatch({ type: "ui.dismiss-error" });
+            }}
+          >
+            Dismiss
+          </button>
         </div>
       )}
 
@@ -470,7 +684,41 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
       )}
 
       {settingsOpen && (
-        <SettingsDialog onClose={() => setSettingsOpen(false)} />
+        <SettingsDialog
+          onClose={() => setSettingsOpen(false)}
+          initialTab={settingsTab}
+          providers={state.providers}
+          modelsByProvider={state.modelsByProvider}
+          modelsLoading={modelsLoading}
+          onFetchModels={fetchModels}
+          onConfigureProvider={(providerId) => {
+            const provider = state.providers.find((entry) => entry.id === providerId);
+            if (provider) {
+              clearCredential();
+              dispatch({ type: "provider.changed", timestamp: new Date().toISOString(), provider });
+              setSettingsOpen(false);
+              setProviderDialog(true);
+            }
+          }}
+          onAddCompatibleProvider={async (input) => {
+            const configured = await send({
+              type: "provider.configure",
+              input: {
+                id: input.id,
+                name: input.name,
+                kind: "openai-compatible",
+                authType: "api-key",
+                baseUrl: input.baseUrl,
+                defaultModel: input.defaultModel,
+                approved: true,
+              },
+            });
+            if (configured.type === "request.failed") return;
+            clearCredential();
+            setSettingsOpen(false);
+            setProviderDialog(true);
+          }}
+        />
       )}
     </div>
   );

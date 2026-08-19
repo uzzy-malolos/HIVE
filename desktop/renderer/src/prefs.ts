@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { DesktopMode } from "./state";
 
 export interface DesktopUiPrefs {
   v: 1;
@@ -8,12 +9,16 @@ export interface DesktopUiPrefs {
   density?: "comfortable" | "compact";
   accent?: "vivid" | "contrast";
   rails?: { left: boolean; right: boolean };
-  /** Top-level surface: conversational Chat or the coder cockpit (legacy compatibility). */
-  mode?: "chat" | "coder";
+  /** Top-level surface. */
+  mode?: DesktopMode;
   /** Split ratio between Chat and Coder panes (e.g. 0.4 = 40% Chat / 60% Coder). */
   splitRatio?: number;
+  fileTree?: boolean;
+  terminalPanel?: boolean;
   /** Enter sends the chat composer message (default true; Ctrl+Enter sends when false). */
   composerSendWithEnter?: boolean;
+  /** Enabled / toggled state for individual model IDs: { [modelId]: boolean }. */
+  enabledModels?: Record<string, boolean>;
 }
 
 const STORAGE_KEY = "hive.desktop.ui.v1";
@@ -28,8 +33,11 @@ export function defaultPrefs(): DesktopUiPrefs {
     notifications: true,
     density: "comfortable",
     accent: "vivid",
-    rails: { left: true, right: true },
+    rails: { left: true, right: false },
+    mode: "chat",
     splitRatio: 0.4,
+    fileTree: true,
+    terminalPanel: true,
   };
 }
 

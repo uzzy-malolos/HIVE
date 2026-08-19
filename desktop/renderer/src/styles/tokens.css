@@ -1,0 +1,47 @@
+:root {
+  /* 85% Neutral Foundation */
+  --hive-bg-deep: #08080b;
+  --hive-bg-base: #0d0d10;
+  --hive-bg-raised: #121217;
+  --hive-bg-hover: #18181e;
+  --hive-bg-selected: #1d1926;
+
+  /* Restrained 1px Border Scale */
+  --hive-border-subtle: rgba(255, 255, 255, 0.055);
+  --hive-border-default: rgba(255, 255, 255, 0.085);
+  --hive-border-strong: rgba(255, 255, 255, 0.13);
+
+  /* 10% HIVE Violet Signal Language */
+  --hive-violet: #7c3aed;
+  --hive-violet-soft: #8b5cf6;
+  --hive-violet-dim: rgba(124, 58, 237, 0.16);
+  --hive-violet-glow: rgba(139, 92, 246, 0.25);
+
+  /* Text Hierarchy */
+  --hive-text: #e5e7eb;
+  --hive-text-secondary: #a1a1aa;
+  --hive-text-dim: #71717a;
+  --hive-text-muted: #52525b;
+
+  /* 5% Semantic Status */
+  --hive-success: #22c55e;
+  --hive-success-dim: rgba(34, 197, 94, 0.14);
+  --hive-warning: #f59e0b;
+  --hive-warning-dim: rgba(245, 158, 11, 0.14);
+  --hive-error: #ef4444;
+  --hive-error-dim: rgba(239, 68, 68, 0.14);
+
+  /* Geometry & Radii */
+  --hive-radius-sm: 5px;
+  --hive-radius-md: 7px;
+  --hive-radius-lg: 10px;
+
+  /* Typography Stacks */
+  --hive-font-ui: "Segoe UI Variable", "Inter", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --hive-font-mono: "JetBrains Mono", "Cascadia Code", "SF Mono", Consolas, monospace;
+
+  /* Shell Dimensions */
+  --hive-sidebar-width: 256px;
+  --hive-titlebar-height: 42px;
+  --hive-inspector-width: 390px;
+}

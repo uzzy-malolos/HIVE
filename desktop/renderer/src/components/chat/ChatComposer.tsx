@@ -93,47 +93,127 @@ export function ChatComposer(props: ChatComposerProps) {
     }
   }
 
+  const modelLabel = override
+    ? `${override.model ?? override.providerId}`
+    : routes[role]?.model ?? providers.find((provider) => provider.configured)?.defaultModel ?? "HIVE Auto";
+
   return (
     <form
-      className="chat-composer gpt-composer"
+      className="chat-composer harness-composer"
       onSubmit={(event) => {
         event.preventDefault();
         submit();
       }}
     >
-      {/* Options Bar / Tools Drawer */}
-      <div className={`composer-chips gpt-tools-drawer${toolsDrawerOpen ? " is-open" : ""}`} aria-label="Composer options">
-        <RolePicker role={role} routes={routes} send={send} onSelect={onRoleChange} />
-        <button
-          type="button"
-          className={`composer-chip toggle${ground ? " on" : ""}`}
-          aria-pressed={ground}
-          aria-label="Toggle Scout grounding"
-          title="Prepend a Scout context pack from this repository"
-          onClick={() => onGroundChange(!ground)}
-        >
-          [/ground{ground ? ": on" : ""}]
-        </button>
-        <button
-          type="button"
-          className={`composer-chip toggle${agent ? " on" : ""}`}
-          aria-pressed={agent}
-          aria-label="Toggle agentic mode"
-          title="Let HiveBot ground answers with read-only repository tools"
-          onClick={() => onAgentChange(!agent)}
-        >
-          [/agent{agent ? ": on" : ""}]
-        </button>
-        <div className="chip-popover">
+      {toolsDrawerOpen && (
+        <div className="composer-advanced" aria-label="Composer options">
+          <RolePicker role={role} routes={routes} send={send} onSelect={onRoleChange} />
+          {council && (
+            <label className="composer-chip preset">
+              preset:
+              <select
+                aria-label="Council preset"
+                value={councilPreset}
+                onChange={(event) => onCouncilPresetChange(event.target.value)}
+              >
+                <option value="quick">quick</option>
+                <option value="standard">standard</option>
+                <option value="deep">deep</option>
+                <option value="audit">audit</option>
+              </select>
+            </label>
+          )}
           <button
             type="button"
-            className="composer-chip"
+            className="composer-chip toggle"
+            aria-pressed={sendWithEnter}
+            aria-label="Toggle Enter to send"
+            title={sendWithEnter ? "Enter sends; Shift+Enter inserts a newline" : "Ctrl+Enter sends; Enter inserts a newline"}
+            onClick={() => updatePrefs({ composerSendWithEnter: !sendWithEnter })}
+          >
+            {sendWithEnter ? "Enter sends" : "Ctrl+Enter sends"}
+          </button>
+        </div>
+      )}
+
+      <div className="mockup-composer-pill">
+      <textarea
+        className="harness-textarea"
+        value={draft}
+        rows={rows}
+        maxLength={MAX_CHARS}
+        aria-label={`Message HIVE (${conversation.role})`}
+        placeholder={council ? "Describe the goal for the council..." : "Ask anything..."}
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={handleKeyDown}
+      />
+      <div className="mockup-composer-tools">
+        <button
+          type="button"
+          className={`harness-bar-btn${toolsDrawerOpen ? " is-on" : ""}`}
+          aria-label="Add tools or attachments"
+          title="More composer options"
+          onClick={() => setToolsDrawerOpen((prev) => !prev)}
+        >
+          +
+        </button>
+        <button
+          type="button"
+          className={`harness-bar-btn${ground ? " is-on" : ""}`}
+          aria-pressed={ground}
+          aria-label="Toggle Scout grounding"
+          title="Add repository context"
+          onClick={() => onGroundChange(!ground)}
+        >
+          G
+        </button>
+        <button
+          type="button"
+          className={`harness-bar-btn${agent ? " is-on" : ""}`}
+          aria-pressed={agent}
+          aria-label="Toggle agentic mode"
+          title="Let HiveBot use read-only repository tools"
+          onClick={() => onAgentChange(!agent)}
+        >
+          A
+        </button>
+        <button
+          type="button"
+          className={`harness-bar-btn${council ? " is-on" : ""}`}
+          aria-pressed={council}
+          aria-label="Toggle council mode"
+          title="Route through the six-role council"
+          onClick={() => onCouncilChange(!council)}
+        >
+          C
+        </button>
+        {council && (
+          <label className="harness-preset">
+            <select
+              aria-label="Council preset"
+              value={councilPreset}
+              onChange={(event) => onCouncilPresetChange(event.target.value)}
+            >
+              <option value="quick">quick</option>
+              <option value="standard">standard</option>
+              <option value="deep">deep</option>
+              <option value="audit">audit</option>
+            </select>
+          </label>
+        )}
+        <span className="char-counter gpt-char-counter" aria-label="Character count">
+          {draft.length} / {MAX_CHARS.toLocaleString()}
+        </span>
+        <div className="chip-popover harness-model-pop">
+          <button
+            type="button"
+            className="harness-model-btn"
             aria-haspopup="listbox"
             aria-expanded={providerMenuOpen}
             aria-label="Provider override"
             onClick={() => setProviderMenuOpen((value) => !value)}
           >
-            [{override ? `${override.providerId}/${override.model ?? "default"}` : "provider: role default"} v]
+            {modelLabel}
           </button>
           {providerMenuOpen && (
             <ul className="chip-menu" role="listbox" aria-label="Providers">
@@ -167,116 +247,16 @@ export function ChatComposer(props: ChatComposerProps) {
             </ul>
           )}
         </div>
-        <button
-          type="button"
-          className={`composer-chip toggle${council ? " on" : ""}`}
-          aria-pressed={council}
-          aria-label="Toggle council mode"
-          title="Route the next message through the six-role hivebot council"
-          onClick={() => onCouncilChange(!council)}
-        >
-          [/council{council ? ": on" : ""}]
-        </button>
-        {council && (
-          <label className="composer-chip preset">
-            preset:
-            <select
-              aria-label="Council preset"
-              value={councilPreset}
-              onChange={(event) => onCouncilPresetChange(event.target.value)}
-            >
-              <option value="quick">quick</option>
-              <option value="standard">standard</option>
-              <option value="deep">deep</option>
-              <option value="audit">audit</option>
-            </select>
-          </label>
-        )}
-        <button
-          type="button"
-          className="composer-chip toggle"
-          aria-pressed={sendWithEnter}
-          aria-label="Toggle Enter to send"
-          title={sendWithEnter ? "Enter sends; Shift+Enter inserts a newline" : "Ctrl+Enter sends; Enter inserts a newline"}
-          onClick={() => updatePrefs({ composerSendWithEnter: !sendWithEnter })}
-        >
-          [{sendWithEnter ? "enter: send" : "ctrl-enter: send"}]
-        </button>
-      </div>
-
-      {/* Main ChatGPT Capsule Bar */}
-      <div className="composer-main gpt-capsule-container">
-        {/* Left Plus / Tool Toggle Button */}
-        <button
-          type="button"
-          className={`capsule-icon-btn plus-btn${toolsDrawerOpen ? " active" : ""}`}
-          aria-label="Add tools or attachments"
-          title="Toggle tools & grounding options"
-          onClick={() => setToolsDrawerOpen((prev) => !prev)}
-        >
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.5">
-            <line x1="12" y1="5" x2="12" y2="19" strokeLinecap="round" />
-            <line x1="5" y1="12" x2="19" y2="12" strokeLinecap="round" />
-          </svg>
-        </button>
-
-        {/* Input Text Area */}
-        <textarea
-          className="capsule-textarea"
-          value={draft}
-          rows={rows}
-          maxLength={MAX_CHARS}
-          aria-label={`Message HIVE (${conversation.role})`}
-          placeholder={council ? "Describe the task for the council..." : "Ask anything"}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={handleKeyDown}
-        />
-
-        {/* Character Counter */}
-        <span className="char-counter gpt-char-counter" aria-label="Character count">
-          {draft.length} / {MAX_CHARS.toLocaleString()}
-        </span>
-
-        {/* Right Actions: Mic, Stop, or Voice/Send */}
-        <div className="gpt-right-actions">
-          <button
-            type="button"
-            className="capsule-icon-btn mic-btn"
-            aria-label="Voice input"
-            title="Voice input"
-          >
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-              <path d="M19 10v2a7 7 0 0 1-14 0v-2" strokeLinecap="round" />
-              <line x1="12" y1="19" x2="12" y2="23" strokeLinecap="round" />
-              <line x1="8" y1="23" x2="16" y2="23" strokeLinecap="round" />
-            </svg>
+        {streaming ? (
+          <button type="button" className="stop-btn" aria-label="Stop generation" onClick={onStop}>
+            Stop
           </button>
-
-          {streaming ? (
-            <button type="button" className="stop-btn gpt-stop-btn" aria-label="Stop generation" onClick={onStop}>
-              Stop
-            </button>
-          ) : draft.trim().length > 0 ? (
-            <button type="submit" className="send-btn gpt-send-btn" disabled={!canSend} aria-label="Send message">
-              Send
-            </button>
-          ) : (
-            <button
-              type="submit"
-              className="capsule-voice-pill"
-              aria-label="Start voice or send message"
-              title="Voice conversation"
-            >
-              <span className="wave-bars">
-                <span className="bar bar-1"></span>
-                <span className="bar bar-2"></span>
-                <span className="bar bar-3"></span>
-                <span className="bar bar-4"></span>
-              </span>
-            </button>
-          )}
-        </div>
+        ) : (
+          <button type="submit" className="mockup-send" disabled={!canSend} aria-label="Send message">
+            Send
+          </button>
+        )}
+      </div>
       </div>
     </form>
   );
