@@ -5,8 +5,10 @@ import type { DesktopProviderMetadata, DesktopRecentRepository } from "../types.
 
 export const DESKTOP_APP_STATE_SCHEMA_VERSION = 1 as const;
 
-const BUILT_IN_PROVIDER_METADATA: DesktopProviderMetadata[] = [
+export const BUILT_IN_PROVIDER_METADATA: DesktopProviderMetadata[] = [
   { id: "anthropic", name: "Anthropic", kind: "anthropic", authType: "api-key", approved: false, configured: false },
+  { id: "deepseek", name: "DeepSeek", kind: "openai-compatible", authType: "api-key", approved: false, configured: false, baseUrl: "https://api.deepseek.com/v1" },
+  { id: "google", name: "Google", kind: "google", authType: "api-key", approved: false, configured: false },
   { id: "hive-cloud", name: "HIVE 0.1", kind: "openai-compatible", authType: "bearer", approved: false, configured: false, defaultModel: "hive-0.1" },
   { id: "ollama", name: "Ollama (local)", kind: "ollama", authType: "none", approved: false, configured: false, baseUrl: "http://127.0.0.1:11434" },
   { id: "openai", name: "OpenAI", kind: "openai", authType: "api-key", approved: false, configured: false },
@@ -102,6 +104,16 @@ async function locked<T>(key: string, operation: () => Promise<T>): Promise<T> {
   finally { release(); if (stateLocks.get(key) === current) stateLocks.delete(key); }
 }
 
+export function mergeBuiltInProviders(state: DesktopAppStateV1): DesktopAppStateV1 {
+  const existingIds = new Set(state.providers.map((p) => p.id));
+  const missing = BUILT_IN_PROVIDER_METADATA.filter((p) => !existingIds.has(p.id)).map((p) => structuredClone(p));
+  if (missing.length === 0) return state;
+  return {
+    ...state,
+    providers: [...state.providers, ...missing],
+  };
+}
+
 export class JsonDesktopAppStateStore {
   readonly #file: string;
   readonly #clock: () => string;
@@ -117,7 +129,8 @@ export class JsonDesktopAppStateStore {
 
   async #loadUnlocked(): Promise<DesktopAppStateV1> {
     try {
-      return validateDesktopAppState(JSON.parse(await fs.readFile(this.#file, "utf8")));
+      const state = validateDesktopAppState(JSON.parse(await fs.readFile(this.#file, "utf8")));
+      return mergeBuiltInProviders(state);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return this.defaultState();
       if (error instanceof SyntaxError) throw new Error("Desktop AppData state is corrupt and was preserved.");

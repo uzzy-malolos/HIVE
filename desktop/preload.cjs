@@ -19,6 +19,7 @@ const COMMANDS = new Set([
   "provider.list",
   "provider.metadata",
   "provider.configure",
+  "models.list",
   "credential.list",
   "credential.metadata",
   "credential.set",
@@ -49,7 +50,10 @@ const COMMANDS = new Set([
   "council.start",
   "council.cancel",
   "shell.open-view",
-  "shell.close-view"
+  "shell.close-view",
+  "workspace.list",
+  "workspace.read",
+  "workspace.pick"
 ]);
 
 function validatedCommand(value) {

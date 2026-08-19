@@ -134,12 +134,18 @@ export interface DesktopRunManager {
   get(request: DesktopRunReferenceRequest): Promise<ThreadRunRef | null>;
 }
 
+export interface GitFileMark {
+  path: string;
+  code: string;
+}
+
 export interface GuardedGitStatus {
   repositoryRoot: string;
   branch: string | null;
   head: string | null;
   dirty: boolean;
   changedFiles: string[];
+  fileMarks?: GitFileMark[];
   ahead: number;
   behind: number;
 }
@@ -230,6 +236,13 @@ export interface GuardedGitService {
   confirmDiscard(input: GuardedGitDiscardConfirmationInput): Promise<void>;
 }
 
+export interface DesktopModelInfo {
+  id: string;
+  name?: string;
+  contextWindow?: number;
+  ownedBy?: string;
+}
+
 export interface DesktopProviderMetadata {
   id: string;
   name: string;
@@ -310,6 +323,37 @@ export interface DesktopOpenExplorerRequest {
   path?: string;
 }
 
+export interface WorkspaceTreeEntry {
+  name: string;
+  path: string;
+  kind: "file" | "dir";
+}
+
+export interface WorkspaceTreeListing {
+  repositoryRoot: string;
+  path: string;
+  truncated: boolean;
+  entries: WorkspaceTreeEntry[];
+}
+
+export interface WorkspaceFilePreview {
+  repositoryRoot: string;
+  path: string;
+  content: string;
+  truncated: boolean;
+  languageHint: string;
+}
+
+export interface DesktopWorkspaceListInput {
+  repositoryRoot: string;
+  path?: string;
+}
+
+export interface DesktopWorkspaceReadInput {
+  repositoryRoot: string;
+  path: string;
+}
+
 type DesktopCommandBase = { requestId: string };
 
 export type DesktopCommand =
@@ -328,6 +372,7 @@ export type DesktopCommand =
   | (DesktopCommandBase & { type: "provider.list" })
   | (DesktopCommandBase & { type: "provider.metadata"; providerId: string })
   | (DesktopCommandBase & { type: "provider.configure"; input: DesktopProviderConfigurationInput })
+  | (DesktopCommandBase & { type: "models.list"; providerId: string })
   | (DesktopCommandBase & { type: "credential.list" })
   | (DesktopCommandBase & { type: "credential.metadata"; providerId: string })
   | (DesktopCommandBase & { type: "credential.set"; input: DesktopCredentialWriteInput })
@@ -381,7 +426,10 @@ export type DesktopCommand =
     })
   | (DesktopCommandBase & { type: "council.cancel"; runId: string })
   | (DesktopCommandBase & { type: "shell.open-view"; view: "chat" | "coder" })
-  | (DesktopCommandBase & { type: "shell.close-view"; view: "chat" | "coder" });
+  | (DesktopCommandBase & { type: "shell.close-view"; view: "chat" | "coder" })
+  | (DesktopCommandBase & { type: "workspace.list"; input: DesktopWorkspaceListInput })
+  | (DesktopCommandBase & { type: "workspace.read"; input: DesktopWorkspaceReadInput })
+  | (DesktopCommandBase & { type: "workspace.pick" });
 
 type DesktopEventBase = { timestamp: string; requestId?: string; repositoryRoot?: string };
 
@@ -411,6 +459,7 @@ export type DesktopEvent =
     })
   | (DesktopEventBase & { type: "provider.listed"; providers: DesktopProviderMetadata[] })
   | (DesktopEventBase & { type: "provider.changed"; provider: DesktopProviderMetadata })
+  | (DesktopEventBase & { type: "models.listed"; providerId: string; models: DesktopModelInfo[] })
   | (DesktopEventBase & { type: "credential.listed"; credentials: DesktopCredentialMetadata[] })
   | (DesktopEventBase & { type: "credential.changed"; credential: DesktopCredentialMetadata })
   | (DesktopEventBase & { type: "credential.tested"; result: DesktopCredentialTestResult })
@@ -477,6 +526,9 @@ export type DesktopEvent =
   | (DesktopEventBase & { type: "council.completed"; runId: string; summary: DesktopCouncilSummary })
   | (DesktopEventBase & { type: "council.failed"; runId: string; message: string })
   | (DesktopEventBase & { type: "shell.views"; views: ("chat" | "coder")[] })
+  | (DesktopEventBase & { type: "workspace.listed"; listing: WorkspaceTreeListing })
+  | (DesktopEventBase & { type: "workspace.file"; file: WorkspaceFilePreview })
+  | (DesktopEventBase & { type: "workspace.picked"; path: string | null })
   | (DesktopEventBase & { type: "request.completed"; requestId: string })
   | (DesktopEventBase & {
       type: "request.failed";

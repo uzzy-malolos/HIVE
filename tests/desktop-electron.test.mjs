@@ -64,6 +64,9 @@ test("desktop IPC accepts exact commands and rejects malformed or extra payloads
   assert.equal(validateDesktopCommand({ requestId: "pause-1", type: "run.pause", input: { repositoryRoot: "C:\\repo", threadId: "thread-1", codingSessionId: "session-1" } }).type, "run.pause");
   assert.throws(() => validateDesktopCommand({ requestId: "pause-1", type: "run.pause", input: { repositoryRoot: "C:\\repo", threadId: "thread-1", codingSessionId: "session-1", force: true } }), /unexpected/i);
   assert.equal(validateDesktopEvent({ type: "run.pause-requested", timestamp: now, requestId: "pause-1", repositoryRoot: "C:\\repo", codingSessionId: "session-1" }).type, "run.pause-requested");
+  assert.equal(validateDesktopCommand({ requestId: "models-1", type: "models.list", providerId: "openai" }).type, "models.list");
+  assert.throws(() => validateDesktopCommand({ requestId: "models-1", type: "models.list" }), /unexpected or missing/i);
+  assert.equal(validateDesktopEvent({ type: "models.listed", timestamp: now, providerId: "openai", models: [{ id: "gpt-4o", contextWindow: 128000 }] }).type, "models.listed");
 });
 
 test("sender and navigation validation only trust the owned renderer", () => {
@@ -137,13 +140,43 @@ test("first-run AppData offers approved-empty provider metadata without changing
   const initial = await store.load();
   assert.deepEqual(initial.providers.map(({ id, authType, approved, configured }) => ({ id, authType, approved, configured })), [
     { id: "anthropic", authType: "api-key", approved: false, configured: false },
+    { id: "deepseek", authType: "api-key", approved: false, configured: false },
+    { id: "google", authType: "api-key", approved: false, configured: false },
     { id: "hive-cloud", authType: "bearer", approved: false, configured: false },
     { id: "ollama", authType: "none", approved: false, configured: false },
     { id: "openai", authType: "api-key", approved: false, configured: false },
   ]);
   const custom = { id: "custom-local", name: "Custom local", kind: "local", authType: "none", approved: true, configured: true };
   await store.save({ ...initial, providers: [custom] });
-  assert.deepEqual((await new JsonDesktopAppStateStore(root).load()).providers, [custom]);
+  const loaded = await new JsonDesktopAppStateStore(root).load();
+  assert.equal(loaded.providers[0].id, "custom-local");
+  assert.ok(loaded.providers.some((p) => p.id === "google"));
+  assert.ok(loaded.providers.some((p) => p.id === "deepseek"));
+  await rm(root, { recursive: true, force: true });
+});
+
+test("AppData state merge preserves user-configured provider row without overwriting", async () => {
+  const root = await temporaryDirectory("hive-desktop-provider-merge-");
+  const store = new JsonDesktopAppStateStore(root, { clock: () => now });
+  const customDeepSeek = {
+    id: "deepseek",
+    name: "My Custom DeepSeek",
+    kind: "openai-compatible",
+    authType: "api-key",
+    approved: true,
+    configured: true,
+    baseUrl: "https://my-proxy.com/v1",
+    defaultModel: "deepseek-custom",
+  };
+  await store.save({ ...store.defaultState(), providers: [customDeepSeek] });
+  const loaded = await new JsonDesktopAppStateStore(root).load();
+  const ds = loaded.providers.find((p) => p.id === "deepseek");
+  assert.equal(ds.name, "My Custom DeepSeek");
+  assert.equal(ds.baseUrl, "https://my-proxy.com/v1");
+  assert.equal(ds.defaultModel, "deepseek-custom");
+  assert.equal(ds.approved, true);
+  assert.equal(ds.configured, true);
+  assert.ok(loaded.providers.some((p) => p.id === "google"));
   await rm(root, { recursive: true, force: true });
 });
 
@@ -158,7 +191,7 @@ test("AppData atomic mutate preserves concurrent repository and provider updates
   ]);
   const saved = await first.load();
   assert.equal(saved.recentRepositories.length, 1);
-  assert.equal(saved.providers.length, 1);
+  assert.ok(saved.providers.some((p) => p.id === "provider-1"));
   await rm(root, { recursive: true, force: true });
 });
 
@@ -916,6 +949,31 @@ test("credential mutation queue prevents stale remove snapshot from overwriting 
   await rm(appData, { recursive: true, force: true });
 });
 
+test("models.list returns a sorted catalog for a known provider", async () => {
+  const appData = await temporaryDirectory("hive-models-list-");
+  const stateStore = new JsonDesktopAppStateStore(appData, { clock: () => now });
+  await stateStore.save({
+    ...stateStore.defaultState(),
+    providers: [{ id: "anthropic", name: "Anthropic", kind: "anthropic", authType: "api-key", approved: true, configured: true }],
+  });
+  const router = new DesktopCommandRouter({
+    stateStore,
+    credentialVault: { async list() { return []; }, async metadata() { return null; }, async set() {}, async replace() {}, async remove() {}, async test() {} },
+    workerSupervisor: { async dispatchAndWait() {}, async reconcileRepositoryRuns() {}, hasActiveRuns() { return false; }, hasActiveRepository() { return false; } },
+    guardedGitFactory: () => { throw new Error("unused"); },
+    clock: () => now,
+  });
+  const event = await router.handle({ requestId: "models-1", type: "models.list", providerId: "anthropic" });
+  assert.equal(event.type, "models.listed");
+  assert.equal(event.providerId, "anthropic");
+  assert.ok(event.models.some((model) => String(model.id).includes("claude")));
+  const ids = event.models.map((model) => model.id);
+  assert.deepEqual(ids, [...ids].sort((a, b) => a.localeCompare(b)));
+  const missing = await router.handle({ requestId: "models-2", type: "models.list", providerId: "missing-provider" });
+  assert.equal(missing.type, "request.failed");
+  await rm(appData, { recursive: true, force: true });
+});
+
 // ---------------------------------------------------------------------------
 // Shell window registry (pop-out coder window)
 // ---------------------------------------------------------------------------
@@ -1038,6 +1096,32 @@ test("shell commands and the views event validate strictly", () => {
   assert.equal(validateDesktopEvent({ type: "shell.views", timestamp: now, views: ["chat", "coder"] }).type, "shell.views");
   assert.throws(() => validateDesktopEvent({ type: "shell.views", timestamp: now, views: [] }), /views are invalid/);
   assert.throws(() => validateDesktopEvent({ type: "shell.views", timestamp: now, views: ["chat", "coder", "chat"] }), /views are invalid/);
+});
+
+test("workspace commands and events validate strictly", () => {
+  assert.equal(validateDesktopCommand({ requestId: "request-1", type: "workspace.list", input: { repositoryRoot: "C:\\repo" } }).type, "workspace.list");
+  assert.equal(validateDesktopCommand({ requestId: "request-1", type: "workspace.list", input: { repositoryRoot: "C:\\repo", path: "src" } }).type, "workspace.list");
+  assert.equal(validateDesktopCommand({ requestId: "request-1", type: "workspace.read", input: { repositoryRoot: "C:\\repo", path: "src/main.js" } }).type, "workspace.read");
+  assert.equal(validateDesktopCommand({ requestId: "request-1", type: "workspace.pick" }).type, "workspace.pick");
+  assert.throws(() => validateDesktopCommand({ requestId: "request-1", type: "workspace.list", input: { repositoryRoot: "C:\\repo", path: "../escape" } }), /invalid/);
+  assert.throws(() => validateDesktopCommand({ requestId: "request-1", type: "workspace.read", input: { repositoryRoot: "C:\\repo" } }), /unexpected or missing fields/);
+  assert.throws(() => validateDesktopCommand({ requestId: "request-1", type: "workspace.pick", extra: true }), /unexpected or missing fields/);
+  assert.equal(validateDesktopEvent({
+    type: "workspace.listed",
+    timestamp: now,
+    listing: { repositoryRoot: "C:\\repo", path: "", truncated: false, entries: [{ name: "src", path: "src", kind: "dir" }] },
+  }).type, "workspace.listed");
+  assert.equal(validateDesktopEvent({
+    type: "workspace.file",
+    timestamp: now,
+    file: { repositoryRoot: "C:\\repo", path: "src/main.js", content: "ok", truncated: false, languageHint: "js" },
+  }).type, "workspace.file");
+  assert.equal(validateDesktopEvent({ type: "workspace.picked", timestamp: now, path: null }).type, "workspace.picked");
+  assert.throws(() => validateDesktopEvent({
+    type: "workspace.listed",
+    timestamp: now,
+    listing: { repositoryRoot: "C:\\repo", path: "../x", truncated: false, entries: [] },
+  }), /invalid/);
 });
 
 test("coder.handoff creates a thread, appends the brief, and starts a run", async () => {

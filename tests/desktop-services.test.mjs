@@ -697,6 +697,7 @@ test("session changes stay committable on a clean base and exclude unrelated dir
   await writeFile(path.join(fixture.repo, "unrelated-base.txt"), "user work\n", "utf8");
   const dirtyBase = await fixture.service.inspect(fixture.repo);
   assert.deepEqual(dirtyBase.changedFiles, ["unrelated-base.txt"]);
+  assert.ok(dirtyBase.fileMarks?.some((mark) => mark.path === "unrelated-base.txt" && mark.code.includes("?")));
   const scopedChanges = await fixture.service.inspectDiff({ repositoryRoot: fixture.repo, codingSessionId: fixture.sessionId });
   assert.deepEqual(scopedChanges.reviewedFiles, ["README.md"]);
   assert.doesNotMatch(scopedChanges.patch, /unrelated-base/);

@@ -326,7 +326,7 @@ export function validateDesktopCommand(value: unknown): DesktopCommand {
     case "run.start": exact(root, ["requestId", "type", "input"], "desktop command"); validateStart(root.input); break;
     case "run.resume": exact(root, ["requestId", "type", "input"], "desktop command"); validateResume(root.input); break;
     case "run.pause": case "run.cancel": case "run.report": exact(root, ["requestId", "type", "input"], "desktop command"); validateRunReference(root.input); break;
-    case "provider.metadata": case "credential.metadata": exact(root, ["requestId", "type", "providerId"], "desktop command"); if (!PROVIDER_ID.test(string(root.providerId, "provider id", 96))) throw new Error("provider id is invalid."); break;
+    case "provider.metadata": case "credential.metadata": case "models.list": exact(root, ["requestId", "type", "providerId"], "desktop command"); if (!PROVIDER_ID.test(string(root.providerId, "provider id", 96))) throw new Error("provider id is invalid."); break;
     case "provider.configure": exact(root, ["requestId", "type", "input"], "desktop command"); validateProviderConfiguration(root.input); break;
     case "credential.set": case "credential.replace": exact(root, ["requestId", "type", "input"], "desktop command"); validateCredentialWrite(root.input); break;
     case "credential.remove": case "credential.test": exact(root, ["requestId", "type", "input"], "desktop command"); validateCredentialReference(root.input); break;
@@ -377,9 +377,32 @@ export function validateDesktopCommand(value: unknown): DesktopCommand {
     }
     case "council.cancel": exact(root, ["requestId", "type", "runId"], "desktop command"); id(root.runId, "council run id"); break;
     case "shell.open-view": case "shell.close-view": exact(root, ["requestId", "type", "view"], "desktop command"); if (!SHELL_VIEWS.has(String(root.view))) throw new Error("shell view is invalid."); break;
+    case "workspace.list": {
+      exact(root, ["requestId", "type", "input"], "desktop command");
+      const input = optionalExact(root.input, ["repositoryRoot"], ["path"], "workspace list input");
+      absolutePath(input.repositoryRoot, "repository root");
+      if (input.path !== undefined && input.path !== "") relativePath(input.path, "workspace list path");
+      break;
+    }
+    case "workspace.read": {
+      exact(root, ["requestId", "type", "input"], "desktop command");
+      const input = exact(root.input, ["repositoryRoot", "path"], "workspace read input");
+      absolutePath(input.repositoryRoot, "repository root");
+      relativePath(input.path, "workspace read path");
+      break;
+    }
+    case "workspace.pick": exact(root, ["requestId", "type"], "desktop command"); break;
     default: throw new Error(`Unsupported desktop command type: ${type}.`);
   }
   return { ...root, requestId, type } as DesktopCommand;
+}
+
+function validateModelInfo(value: unknown): void {
+  const model = optionalExact(value, ["id"], ["name", "contextWindow", "ownedBy"], "model info");
+  string(model.id, "model id", 256);
+  if (model.name !== undefined) string(model.name, "model name", 256);
+  if (model.contextWindow !== undefined && (!Number.isSafeInteger(model.contextWindow) || Number(model.contextWindow) < 1 || Number(model.contextWindow) > 100_000_000)) throw new Error("model context window is invalid.");
+  if (model.ownedBy !== undefined) string(model.ownedBy, "model ownedBy", 256);
 }
 
 const EVENT_KEYS: Record<DesktopEvent["type"], readonly string[]> = {
@@ -387,7 +410,7 @@ const EVENT_KEYS: Record<DesktopEvent["type"], readonly string[]> = {
   "run.changed": ["type", "timestamp", "run"], "run.pause-requested": ["type", "timestamp", "codingSessionId"], "run.reported": ["type", "timestamp", "codingSessionId", "report"], "runtime.event": ["type", "timestamp", "event"], "worker.starting": ["type", "timestamp", "codingSessionId"],
   "worker.started": ["type", "timestamp", "codingSessionId", "processId"], "worker.stopped": ["type", "timestamp", "codingSessionId", "exitCode", "signal", "expected"],
   "worker.failed": ["type", "timestamp", "codingSessionId", "message", "recoverable"], "provider.listed": ["type", "timestamp", "providers"],
-  "provider.changed": ["type", "timestamp", "provider"], "credential.listed": ["type", "timestamp", "credentials"], "credential.changed": ["type", "timestamp", "credential"],
+  "provider.changed": ["type", "timestamp", "provider"], "models.listed": ["type", "timestamp", "providerId", "models"], "credential.listed": ["type", "timestamp", "credentials"], "credential.changed": ["type", "timestamp", "credential"],
   "credential.tested": ["type", "timestamp", "result"], "git.changed": ["type", "timestamp", "status"], "git.previewed": ["type", "timestamp", "preview"],
   "git.action-completed": ["type", "timestamp", "action", "head", "summary", "url"],
   "changes.diffed": ["type", "timestamp", "diff"], "chat.listed": ["type", "timestamp", "conversations"], "chat.changed": ["type", "timestamp", "conversation"],
@@ -399,6 +422,9 @@ const EVENT_KEYS: Record<DesktopEvent["type"], readonly string[]> = {
   "council.started": ["type", "timestamp", "runId", "preset"], "council.stage": ["type", "timestamp", "runId", "stage"],
   "council.completed": ["type", "timestamp", "runId", "summary"], "council.failed": ["type", "timestamp", "runId", "message"],
   "shell.views": ["type", "timestamp", "views"],
+  "workspace.listed": ["type", "timestamp", "listing"],
+  "workspace.file": ["type", "timestamp", "file"],
+  "workspace.picked": ["type", "timestamp", "path"],
   "request.completed": ["type", "timestamp", "requestId"], "request.failed": ["type", "timestamp", "requestId", "message", "recoverable"],
 };
 
@@ -429,6 +455,7 @@ export function validateDesktopEvent(value: unknown): DesktopEvent {
     case "worker.failed": if (candidate.codingSessionId !== undefined) id(candidate.codingSessionId, "coding session id"); boundaryString(candidate.message, "worker failure", 2_000); boolean(candidate.recoverable, "worker recoverable flag"); break;
     case "provider.listed": if (!Array.isArray(candidate.providers) || candidate.providers.length > 1_000) throw new Error("Provider list is invalid."); candidate.providers.forEach(validateEventProvider); break;
     case "provider.changed": validateEventProvider(candidate.provider); break;
+    case "models.listed": if (!PROVIDER_ID.test(string(candidate.providerId, "provider id", 96))) throw new Error("provider id is invalid."); if (!Array.isArray(candidate.models) || candidate.models.length > 5_000) throw new Error("Models list is invalid."); candidate.models.forEach(validateModelInfo); break;
     case "credential.listed": if (!Array.isArray(candidate.credentials) || candidate.credentials.length > 1_000) throw new Error("Credential list is invalid."); candidate.credentials.forEach(validateEventCredential); break;
     case "credential.changed": validateEventCredential(candidate.credential); break;
     case "credential.tested": { const result = exact(candidate.result, ["providerId", "ok", "message"], "credential test result"); providerId(result.providerId); boolean(result.ok, "credential test result"); boundaryString(result.message, "credential test message", 500); break; }
@@ -464,6 +491,9 @@ export function validateDesktopEvent(value: unknown): DesktopEvent {
       if (!Array.isArray(candidate.views) || candidate.views.length < 1 || candidate.views.length > 2 || candidate.views.some((view) => !SHELL_VIEWS.has(String(view)))) throw new Error("Shell views are invalid.");
       break;
     }
+    case "workspace.listed": validateWorkspaceListing(candidate.listing); break;
+    case "workspace.file": validateWorkspaceFile(candidate.file); break;
+    case "workspace.picked": if (candidate.path !== null) absolutePath(candidate.path, "workspace picked path"); break;
     case "request.completed": break;
     case "request.failed": boundaryString(candidate.message, "request failure", 2_000); boolean(candidate.recoverable, "request recoverable flag"); break;
   }
@@ -574,7 +604,45 @@ function validateBoundedJson(value: unknown, depth: number, state: { nodes: numb
 }
 
 function validateGitStatus(value: unknown): void {
-  const status = exact(value, ["repositoryRoot", "branch", "head", "dirty", "changedFiles", "ahead", "behind"], "Git status"); absolutePath(status.repositoryRoot, "repository root"); if (status.branch !== null) boundaryString(status.branch, "Git branch", 256); if (status.head !== null) boundaryString(status.head, "Git head", 128); boolean(status.dirty, "Git dirty flag"); if (!Array.isArray(status.changedFiles) || status.changedFiles.length > 10_000) throw new Error("Git changed files are invalid."); status.changedFiles.forEach((item) => relativePath(item, "Git changed file")); for (const key of ["ahead", "behind"] as const) if (!Number.isSafeInteger(status[key]) || Number(status[key]) < 0 || Number(status[key]) > 1_000_000) throw new Error(`Git ${key} count is invalid.`);
+  const status = optionalExact(value, ["repositoryRoot", "branch", "head", "dirty", "changedFiles", "ahead", "behind"], ["fileMarks"], "Git status");
+  absolutePath(status.repositoryRoot, "repository root");
+  if (status.branch !== null) boundaryString(status.branch, "Git branch", 256);
+  if (status.head !== null) boundaryString(status.head, "Git head", 128);
+  boolean(status.dirty, "Git dirty flag");
+  if (!Array.isArray(status.changedFiles) || status.changedFiles.length > 10_000) throw new Error("Git changed files are invalid.");
+  status.changedFiles.forEach((item) => relativePath(item, "Git changed file"));
+  if (status.fileMarks !== undefined) {
+    if (!Array.isArray(status.fileMarks) || status.fileMarks.length > 10_000) throw new Error("Git file marks are invalid.");
+    for (const mark of status.fileMarks) {
+      const entry = exact(mark, ["path", "code"], "Git file mark");
+      relativePath(entry.path, "Git file mark path");
+      boundaryString(entry.code, "Git file mark code", 4);
+    }
+  }
+  for (const key of ["ahead", "behind"] as const) if (!Number.isSafeInteger(status[key]) || Number(status[key]) < 0 || Number(status[key]) > 1_000_000) throw new Error(`Git ${key} count is invalid.`);
+}
+
+function validateWorkspaceListing(value: unknown): void {
+  const listing = exact(value, ["repositoryRoot", "path", "truncated", "entries"], "workspace listing");
+  absolutePath(listing.repositoryRoot, "repository root");
+  if (listing.path !== "") relativePath(listing.path, "workspace listing path");
+  boolean(listing.truncated, "workspace listing truncated flag");
+  if (!Array.isArray(listing.entries) || listing.entries.length > 400) throw new Error("Workspace listing entries are invalid.");
+  for (const entry of listing.entries) {
+    const item = exact(entry, ["name", "path", "kind"], "workspace listing entry");
+    boundaryString(item.name, "workspace entry name", 512);
+    relativePath(item.path, "workspace entry path");
+    if (item.kind !== "file" && item.kind !== "dir") throw new Error("Workspace entry kind is invalid.");
+  }
+}
+
+function validateWorkspaceFile(value: unknown): void {
+  const file = exact(value, ["repositoryRoot", "path", "content", "truncated", "languageHint"], "workspace file");
+  absolutePath(file.repositoryRoot, "repository root");
+  relativePath(file.path, "workspace file path");
+  boundaryText(file.content, "workspace file content", 256 * 1024);
+  boolean(file.truncated, "workspace file truncated flag");
+  boundaryString(file.languageHint, "workspace language hint", 16);
 }
 
 function validateGitPreview(value: unknown): void {

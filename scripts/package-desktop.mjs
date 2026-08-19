@@ -12,12 +12,19 @@ const electronDist = path.join(rootDir, "node_modules", "electron", "dist");
 
 console.log("==> 1. Assembling staging app...");
 if (existsSync(stagingDir)) {
-  rmSync(stagingDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  rmSync(stagingDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
 }
 mkdirSync(stagingDir, { recursive: true });
 
 if (existsSync(unpackedDir)) {
-  rmSync(unpackedDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  try {
+    rmSync(unpackedDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
+  } catch {
+    // If folder is busy on Windows, clean directory contents
+    try {
+      execSync(`powershell -NoProfile -Command "Remove-Item -Path '${unpackedDir}\\*' -Recurse -Force -ErrorAction SilentlyContinue"`);
+    } catch {}
+  }
 }
 mkdirSync(unpackedDir, { recursive: true });
 

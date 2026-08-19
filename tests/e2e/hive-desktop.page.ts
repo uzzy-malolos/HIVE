@@ -5,14 +5,14 @@ export class HiveDesktopPage {
 
   async expectCockpit(): Promise<void> {
     await expect(this.page).toHaveTitle("HIVE Desktop");
-    await expect(this.page.getByRole("navigation", { name: "Repositories and threads" })).toBeVisible();
+    await expect(this.page.getByRole("navigation", { name: "Global Navigation" })).toBeVisible();
     await expect(this.page.getByRole("main")).toBeVisible();
-    await expect(this.page.getByRole("complementary", { name: "Run inspector" })).toBeVisible();
   }
 
   async openRepository(repositoryRoot: string): Promise<void> {
     await this.page.getByLabel("Repository path").fill(repositoryRoot);
     await this.page.getByRole("button", { name: /^Open$/ }).click();
+    await this.page.getByRole("button", { name: "Codex" }).click();
     await expect(this.page.getByLabel("New thread title")).toBeVisible();
   }
 
@@ -52,7 +52,7 @@ export class HiveDesktopPage {
   }
 
   async expectPhase(phase: string): Promise<void> {
-    await expect(this.page.getByRole("complementary", { name: "Run inspector" }).locator(".status-pill").filter({ hasText: phase }).first()).toBeVisible();
+    await expect(this.page.getByRole("complementary", { name: "Harness Inspector" }).locator(".status-pill").filter({ hasText: phase }).first()).toBeVisible();
     if (["completed", "cancelled", "failed", "paused"].includes(phase)) {
       await expect(this.page.getByRole("banner").locator(".status-pill").filter({ hasText: "stopped" })).toBeVisible();
     }

@@ -124,6 +124,14 @@ async function start(): Promise<void> {
       return service;
     },
     externalTools: new DesktopExternalToolService("vscode", undefined, executables),
+    pickDirectory: async () => {
+      const focused = BrowserWindow.getFocusedWindow();
+      const result = focused
+        ? await dialog.showOpenDialog(focused, { properties: ["openDirectory"] })
+        : await dialog.showOpenDialog({ properties: ["openDirectory"] });
+      if (result.canceled || !result.filePaths[0]) return null;
+      return result.filePaths[0];
+    },
     onEvent: (event) => shellWindows?.broadcast(event),
   });
 
@@ -137,7 +145,7 @@ async function start(): Promise<void> {
   function createShellWindow(view: ShellView): BrowserWindow {
     const window = new BrowserWindow({
       width: 1440, height: 900, minWidth: 1060, minHeight: 680, show: true, backgroundColor: "#0b0712",
-      title: view === "coder" ? "Hive Code" : "HiveBot",
+      title: "HIVE",
       webPreferences: { ...DESKTOP_BROWSER_WEB_PREFERENCES, preload: preloadFile },
     });
     window.show();

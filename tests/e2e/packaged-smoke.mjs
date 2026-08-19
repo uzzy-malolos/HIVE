@@ -46,27 +46,28 @@ try {
   page.on("console", (message) => { if (message.type() === "error") rendererErrors.push(message.text()); });
   await page.waitForLoadState("domcontentloaded");
   if ((await page.title()) !== "HIVE Desktop") throw new Error(`Unexpected packaged title: ${await page.title()}`);
-  const coderTab = page.getByRole("tab", { name: /hive code|coder/i });
+  const coderTab = page.getByRole("button", { name: "Codex" });
   if (await coderTab.isVisible().catch(() => false)) {
     await coderTab.click();
   }
-  for (const selector of ["nav[aria-label='Repositories and threads']", "main", "aside[aria-label='Run inspector']"]) await page.locator(selector).waitFor({ state: "visible", timeout: 15_000 });
+  for (const selector of ["nav[aria-label='Global Navigation']", "main"]) await page.locator(selector).waitFor({ state: "visible", timeout: 15_000 });
   await page.getByLabel("Repository path").first().fill(repository);
   await page.getByRole("button", { name: /^Open$/ }).first().click();
   await page.getByLabel("New thread title").waitFor({ state: "visible" });
 
-  await page.getByLabel("Provider").selectOption("openai");
+  await page.getByLabel("Provider", { exact: true }).selectOption("openai");
   await page.getByRole("button", { name: "Configure provider" }).click();
   await page.getByLabel("API key").fill(secret);
   await page.getByRole("button", { name: "Store encrypted credential" }).click();
   await expect(page.getByText("Credential encrypted and stored.")).toBeVisible();
 
-  await page.getByLabel("Provider").selectOption(SMOKE_PROVIDER);
+  await page.getByLabel("Provider", { exact: true }).selectOption(SMOKE_PROVIDER);
   await page.getByLabel("New thread title").fill("Packaged worker smoke");
   await page.getByRole("button", { name: "Create thread" }).click();
+  await page.getByRole("heading", { name: "Packaged worker smoke" }).waitFor({ state: "visible" });
   await page.getByLabel("Message HIVE").fill(SMOKE_MESSAGE);
-  await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.locator("aside[aria-label='Run inspector'] .status-pill").filter({ hasText: "completed" })).toBeVisible({ timeout: 30_000 });
+  await page.locator("form.composer button[type='submit']").click();
+  await expect(page.locator(".status-pill").filter({ hasText: "completed" })).toBeVisible({ timeout: 30_000 });
   await page.getByRole("tab", { name: /report/i }).click();
   await expect(page.getByRole("heading", { name: SMOKE_REPORT })).toBeVisible({ timeout: 15_000 });
 

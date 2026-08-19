@@ -51,6 +51,7 @@ export interface DesktopCredentialVaultService {
   replace(input: DesktopCredentialWriteInput): Promise<DesktopCredentialMetadata>;
   remove(input: DesktopCredentialReference): Promise<void>;
   test(input: DesktopCredentialReference): Promise<DesktopCredentialTestResult>;
+  credentialResolver?: CredentialResolver;
 }
 
 function validateProviderId(providerId: string): void {

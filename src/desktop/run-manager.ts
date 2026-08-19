@@ -331,14 +331,13 @@ export class DefaultDesktopRunManager implements DesktopRunManager {
           active.requestPause = launched.requestPause;
         }
         const result = await (isRuntimeHandle(launched) ? launched.completion : launched);
+        if (!active.terminalOverride) await this.#queueStatus(active, result.status, result.updatedAt || this.#clock());
         await active.persistence;
-        if (!active.terminalOverride) await this.#persistStatus(active, result.status, result.updatedAt || this.#clock());
       } catch (error) {
         if (!controller.signal.aborted) {
           expectedStop = false;
           exitCode = 1;
         }
-        await active.persistence;
         let status: CodingSessionStatus = controller.signal.aborted ? "cancelled" : "failed";
         if (!controller.signal.aborted) {
           const authoritative = await this.#codingSessionStoreFactory(input.repositoryRoot)
@@ -346,9 +345,18 @@ export class DefaultDesktopRunManager implements DesktopRunManager {
             .catch(() => null);
           if (authoritative && (authoritative.status === "paused" || TERMINAL.has(authoritative.status))) {
             status = authoritative.status;
+          } else {
+            const thread = await this.#threadStoreFactory(input.repositoryRoot)
+              .load(input.threadId)
+              .catch(() => null);
+            const run = thread?.runs.find((candidate) => candidate.codingSessionId === input.sessionId);
+            if (run && (run.status === "paused" || TERMINAL.has(run.status))) {
+              status = run.status;
+            }
           }
         }
-        if (!active.terminalOverride) await this.#persistStatus(active, status, this.#clock());
+        if (!active.terminalOverride) await this.#queueStatus(active, status, this.#clock());
+        await active.persistence;
         if (!controller.signal.aborted && !active.terminalOverride) {
           this.#emit({
             type: "worker.failed",
@@ -359,9 +367,7 @@ export class DefaultDesktopRunManager implements DesktopRunManager {
           });
         }
       } finally {
-        if (this.#activeByRepository.get(input.repositoryRoot) === active) {
-          this.#activeByRepository.delete(input.repositoryRoot);
-        }
+        this.#activeByRepository.delete(input.repositoryRoot);
         this.#emit({
           type: "worker.stopped",
           timestamp: this.#clock(),
@@ -373,9 +379,11 @@ export class DefaultDesktopRunManager implements DesktopRunManager {
     });
   }
 
-  #queueStatus(active: ActiveRun, status: CodingSessionStatus, timestamp: string): void {
-    if (active.terminalOverride) return;
-    active.persistence = active.persistence.then(() => this.#persistStatus(active, status, timestamp));
+  #queueStatus(active: ActiveRun, status: CodingSessionStatus, timestamp: string): Promise<void> {
+    if (active.terminalOverride) return Promise.resolve();
+    const next = active.persistence.then(() => this.#persistStatus(active, status, timestamp));
+    active.persistence = next.catch(() => {});
+    return next;
   }
 
   async #persistStatus(active: ActiveRun, status: CodingSessionStatus, timestamp: string): Promise<void> {

@@ -149,7 +149,13 @@ export class DefaultGuardedGitService implements GuardedGitService {
       this.#head(root),
       this.#git(root, ["status", "--porcelain=v1", "-z"]),
     ]);
-    const changedFiles = status.stdout.split("\0").filter(Boolean).map((line) => line.slice(3)).sort();
+    const fileMarks = status.stdout.split("\0").filter(Boolean).flatMap((line) => {
+      if (line.length < 3 || !/^[ MADRCU?!]{2}/.test(line.slice(0, 2))) return [];
+      const filePath = line.slice(3).replaceAll("\\", "/");
+      if (!filePath) return [];
+      return [{ path: filePath, code: line.slice(0, 2) }];
+    });
+    const changedFiles = [...new Set(fileMarks.map((mark) => mark.path))].sort();
     let ahead = 0;
     let behind = 0;
     try {
@@ -159,7 +165,7 @@ export class DefaultGuardedGitService implements GuardedGitService {
     } catch {
       // A repository without an upstream is neither reported ahead nor behind.
     }
-    return { repositoryRoot: root, branch: branch.stdout.trim() || null, head, dirty: changedFiles.length > 0, changedFiles, ahead, behind };
+    return { repositoryRoot: root, branch: branch.stdout.trim() || null, head, dirty: changedFiles.length > 0, changedFiles, fileMarks, ahead, behind };
   }
 
   public async inspectDiff(request: DesktopChangesDiffRequest): Promise<DesktopChangesDiff> {

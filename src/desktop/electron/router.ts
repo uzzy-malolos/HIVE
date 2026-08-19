@@ -12,6 +12,8 @@ import type { JsonDesktopAppStateStore } from "./app-state.js";
 import type { WorkerProcessSupervisor } from "./worker-supervisor.js";
 import { redactDesktopFailure } from "./security.js";
 import { CodingSessionStore } from "../../coding/session-store.js";
+import { listWorkspaceEntries, readWorkspaceFile } from "../workspace-tree.js";
+import { DesktopModelLister } from "../model-lister.js";
 
 export interface DesktopCommandRouterOptions {
   stateStore: JsonDesktopAppStateStore;
@@ -30,6 +32,7 @@ export interface DesktopCommandRouterOptions {
   onEvent?: (event: DesktopEvent) => void;
   clock?: () => string;
   canonicalize?: (repositoryRoot: string) => Promise<string>;
+  pickDirectory?: () => Promise<string | null>;
 }
 
 const credentialRouterQueues = new WeakMap<object, Promise<void>>();
@@ -72,10 +75,10 @@ export class DesktopCommandRouter {
     try {
       const command = validateDesktopCommand(untrusted);
       requestId = command.requestId;
-      const repositoryCommands = new Set(["repository.open", "thread.list", "thread.create", "thread.load", "thread.message.append", "thread.archive", "run.start", "run.pause", "run.resume", "run.cancel", "run.report", "git.inspect", "changes.diff", "git.commit.preview", "git.commit.confirm", "git.push.preview", "git.push.confirm", "git.pull-request.preview", "git.pull-request.confirm", "git.discard.preview", "git.discard.confirm", "external.open-editor", "external.open-terminal", "external.open-explorer", "chat.list", "chat.create", "chat.load", "chat.archive", "chat.route", "chat.send", "chat.cancel", "coder.handoff", "council.start", "council.cancel"]);
+      const repositoryCommands = new Set(["repository.open", "thread.list", "thread.create", "thread.load", "thread.message.append", "thread.archive", "run.start", "run.pause", "run.resume", "run.cancel", "run.report", "git.inspect", "changes.diff", "git.commit.preview", "git.commit.confirm", "git.push.preview", "git.push.confirm", "git.pull-request.preview", "git.pull-request.confirm", "git.discard.preview", "git.discard.confirm", "external.open-editor", "external.open-terminal", "external.open-explorer", "chat.list", "chat.create", "chat.load", "chat.archive", "chat.route", "chat.send", "chat.cancel", "coder.handoff", "council.start", "council.cancel", "workspace.list", "workspace.read"]);
       if (repositoryCommands.has(command.type)) provenanceRoot = command.type === "repository.open" ? command.repositoryRoot : this.#repositoryRoot;
       const dispatched = await this.#dispatch(command);
-      const repositoryScoped = new Set(["desktop.ready", "thread.changed", "thread.listed", "run.changed", "run.pause-requested", "run.reported", "runtime.event", "worker.starting", "worker.started", "worker.stopped", "git.changed", "git.previewed", "git.action-completed", "changes.diffed", "request.completed"]);
+      const repositoryScoped = new Set(["desktop.ready", "thread.changed", "thread.listed", "run.changed", "run.pause-requested", "run.reported", "runtime.event", "worker.starting", "worker.started", "worker.stopped", "git.changed", "git.previewed", "git.action-completed", "changes.diffed", "workspace.listed", "workspace.file", "request.completed"]);
       const repositoryRoot = dispatched.type === "desktop.ready" ? dispatched.repositoryRoot : provenanceRoot;
       const event = validateDesktopEvent({ ...dispatched, requestId: command.requestId, ...(repositoryRoot && repositoryScoped.has(dispatched.type) ? { repositoryRoot } : {}) });
       this.options.onEvent?.(event);
@@ -156,6 +159,18 @@ export class DesktopCommandRouter {
           return { type: "provider.changed", timestamp, provider };
         });
       }
+      case "models.list": {
+        const { provider, credential } = await this.#credentialTransaction(async () => {
+          const provider = (await this.#syncProviderConfigured()).providers.find((entry) => entry.id === command.providerId);
+          if (!provider) throw new Error("Provider metadata not found.");
+          const credential = this.options.credentialVault.credentialResolver
+            ? await this.options.credentialVault.credentialResolver.resolve(command.providerId)
+            : null;
+          return { provider, credential };
+        });
+        const models = await DesktopModelLister.list(provider, credential);
+        return { type: "models.listed", timestamp, providerId: command.providerId, models };
+      }
       case "credential.list": return this.#credentialTransaction(async () => { const credentials = await this.options.credentialVault.list(); await this.#syncProviderConfigured(credentials); return { type: "credential.listed", timestamp, credentials }; });
       case "credential.metadata": { const credential = await this.options.credentialVault.metadata(command.providerId); if (!credential) throw new Error("Credential metadata not found."); return { type: "credential.changed", timestamp, credential }; }
       case "credential.set": return this.#credentialTransaction(async () => { const credential = await this.options.credentialVault.set(command.input); await this.#syncProviderConfigured(); return { type: "credential.changed", timestamp, credential }; });
@@ -202,6 +217,18 @@ export class DesktopCommandRouter {
       case "council.start": { await this.#councilService.start(command.input); return { type: "request.completed", timestamp, requestId: command.requestId }; }
       case "council.cancel": { this.#councilService.cancel(command.runId); return { type: "request.completed", timestamp, requestId: command.requestId }; }
       case "shell.open-view": case "shell.close-view": throw new Error("Shell window commands are handled by the desktop shell process.");
+      case "workspace.list": {
+        const root = await this.#selected(command.input.repositoryRoot);
+        return { type: "workspace.listed", timestamp, listing: await listWorkspaceEntries(root, command.input.path ?? "") };
+      }
+      case "workspace.read": {
+        const root = await this.#selected(command.input.repositoryRoot);
+        return { type: "workspace.file", timestamp, file: await readWorkspaceFile(root, command.input.path) };
+      }
+      case "workspace.pick": {
+        const picked = this.options.pickDirectory ? await this.options.pickDirectory() : null;
+        return { type: "workspace.picked", timestamp, path: picked };
+      }
     }
   }
 

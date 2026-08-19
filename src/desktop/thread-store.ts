@@ -278,7 +278,7 @@ export class JsonThreadStore implements ThreadStore {
 
   public async mutate(threadId: string, update: (thread: ThreadRecordV1) => ThreadRecordV1 | void): Promise<ThreadRecordV1> {
     validateDesktopId(threadId);
-    const key = path.join(this.getThreadDirectory(threadId), THREAD_FILE);
+    const key = path.resolve(this.getThreadDirectory(threadId), THREAD_FILE).toLowerCase();
     return serializeThreadMutation(key, async () => {
       const current = await this.load(threadId);
       if (!current) throw new Error(`Desktop thread ${threadId} does not exist.`);
