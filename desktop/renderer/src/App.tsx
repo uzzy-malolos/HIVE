@@ -19,7 +19,7 @@ import type { WorkspaceTab } from "./shell/WorkspaceTabs";
 import { notifyRunCompleted } from "./notifications";
 import { usePrefs } from "./prefs";
 import { initialDesktopState, latestRun, reduceDesktopEvent, type CenterTab, type DesktopMode } from "./state";
-import { identifier, terminalStatuses } from "./utils";
+import { identifier, projectName, terminalStatuses } from "./utils";
 import "./styles.css";
 import "./styles/motion.css";
 
@@ -28,7 +28,6 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
   const [state, dispatch] = useReducer(reduceDesktopEvent, undefined, initialDesktopState);
   const { prefs, updatePrefs } = usePrefs();
 
-  const [repositoryPath, setRepositoryPath] = useState("");
   const [composer, setComposer] = useState("");
   const [saving, setSaving] = useState(false);
   const [retryMessageId, setRetryMessageId] = useState<string | null>(null);
@@ -213,6 +212,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
             title: thread.title,
             kind: "coder" as const,
             active: thread.id === state.activeThreadId,
+            updatedAt: thread.updatedAt,
             ...(live ? { status: live.status } : {}),
           };
         });
@@ -226,6 +226,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
         title: conversation.title || "New chat",
         kind: "chat" as const,
         active: conversation.id === state.chat.activeId,
+        updatedAt: conversation.updatedAt,
       }));
   }, [state.mode, state.chat.conversations, state.chat.activeId, state.threads, state.activeThreadId]);
 
@@ -255,7 +256,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
 
   const shellStatus = [
     state.repositoryRoot
-      ? { label: state.repositoryRoot.split(/[\\/]/).filter(Boolean).at(-1) ?? state.repositoryRoot }
+      ? { label: projectName(state.repositoryRoot) }
       : { label: "No workspace" },
     { label: state.mode === "chat" ? "HiveChat" : "Hive Code", emphasis: true },
     { label: activeModelName },
@@ -272,8 +273,8 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
       const ready = await send({ type: "repository.open", repositoryRoot: value }, { epoch });
       if (epoch === openEpochRef.current && ready.type === "desktop.ready") {
         repositoryRef.current = ready.repositoryRoot;
-        setRepositoryPath(ready.repositoryRoot);
         await Promise.all([
+          send({ type: "repository.list" }, { epoch }),
           send({ type: "thread.list" }, { epoch, repositoryRoot: ready.repositoryRoot }),
           send({ type: "provider.list" }, { epoch }),
           send({ type: "git.inspect", repositoryRoot: ready.repositoryRoot }, { epoch, repositoryRoot: ready.repositoryRoot }),
@@ -282,6 +283,11 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
         ]);
       }
     } finally { if (epoch === openEpochRef.current) setBusy(false); }
+  }
+
+  async function pickAndOpenRepository(): Promise<void> {
+    const picked = await send({ type: "workspace.pick" });
+    if (picked.type === "workspace.picked" && picked.path) await openRepository(picked.path);
   }
 
   async function loadThread(thread: ThreadRecordV1): Promise<void> {
@@ -385,7 +391,9 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
   }
 
   const toggleRail = (side: "left" | "right") => {
-    const nextRails = { ...state.rails, [side]: !state.rails[side] };
+    // Read through the ref so keyboard handlers bound in earlier renders toggle the live value.
+    const rails = stateRef.current.rails;
+    const nextRails = { ...rails, [side]: !rails[side] };
     dispatch({ type: "ui.rails", side });
     updatePrefs({ rails: nextRails });
   };
@@ -398,14 +406,24 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
   const paletteCommands: PaletteCommand[] = useMemo(() => {
     const list: PaletteCommand[] = [];
 
-    state.repositories.slice(0, 6).forEach((repo) => {
-      list.push({
-        id: `repo-${repo.path}`,
-        label: `Open repository: ${repo.path}`,
-        hint: "Recent",
-        run: () => void openRepository(repo.path),
-      });
+    list.push({
+      id: "project-browse",
+      label: "Open project folder...",
+      hint: "Browse",
+      run: () => void pickAndOpenRepository(),
     });
+
+    state.repositories
+      .filter((repo) => repo.path.toLowerCase() !== state.repositoryRoot?.toLowerCase())
+      .slice(0, 6)
+      .forEach((repo) => {
+        list.push({
+          id: `repo-${repo.path}`,
+          label: `Open project: ${projectName(repo.path)} (${repo.path})`,
+          hint: "Recent",
+          run: () => void openRepository(repo.path),
+        });
+      });
 
     list.push({
       id: "tab-conv",
@@ -428,8 +446,8 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
 
     list.push({
       id: "toggle-left",
-      label: "Toggle Workspace sidebar",
-      hint: "[/]",
+      label: "Toggle sidebar",
+      hint: "Ctrl+B",
       run: () => toggleRail("left"),
     });
 
@@ -536,6 +554,12 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
         return;
       }
 
+      if (!modalOpen && meta && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "b") {
+        event.preventDefault();
+        toggleRail("left");
+        return;
+      }
+
       const isInput = typing;
 
       if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
@@ -577,11 +601,14 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
         onCreateTask={handleNewTask}
         sessions={recentSessions}
         onSelectSession={handleSelectSession}
-        repositoryPath={repositoryPath}
-        setRepositoryPath={setRepositoryPath}
+        repositoryPath={state.repositoryRoot ?? ""}
         onOpenRepository={openRepository}
+        onPickRepository={pickAndOpenRepository}
+        recentProjects={state.repositories}
         busy={busy}
-        projectName={repositoryPath ? repositoryPath.split(/[\\/]/).filter(Boolean).at(-1) ?? "HIVE" : "HIVE"}
+        sidebarOpen={state.rails.left}
+        onToggleSidebar={() => toggleRail("left")}
+        projectName={state.repositoryRoot ? projectName(state.repositoryRoot) : "HIVE"}
         sessionTabs={sessionTabs}
         activeTabId={activeTabId}
         onSelectTab={handleSelectSession}
@@ -615,10 +642,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
             onSelectModel={(choice) => setModelChoice({ providerId: choice.providerId, model: choice.model })}
             onOpenModelPicker={() => { setSettingsTab("catalog"); setSettingsOpen(true); }}
             onOpenSettings={() => dispatch({ type: "ui.mode", mode: "settings" })}
-            onOpenRepositoryPicker={async () => {
-              const picked = await send({ type: "workspace.pick" });
-              if (picked.type === "workspace.picked" && picked.path) await openRepository(picked.path);
-            }}
+            onOpenRepositoryPicker={pickAndOpenRepository}
             onSelectFile={async (filePath) => {
               if (!state.repositoryRoot) return;
               dispatch({ type: "ui.preview-file", path: filePath });
@@ -681,10 +705,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
             activeModelName={activeModelName}
             onOpenModelPicker={() => { setSettingsTab("catalog"); setSettingsOpen(true); }}
             onOpenSettings={() => dispatch({ type: "ui.mode", mode: "settings" })}
-            onOpenRepositoryPicker={async () => {
-              const picked = await send({ type: "workspace.pick" });
-              if (picked.type === "workspace.picked" && picked.path) await openRepository(picked.path);
-            }}
+            onOpenRepositoryPicker={pickAndOpenRepository}
             onSelectFile={async (filePath) => {
               if (!state.repositoryRoot) return;
               dispatch({ type: "ui.preview-file", path: filePath });

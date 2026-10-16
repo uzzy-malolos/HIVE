@@ -11,6 +11,7 @@ export function ShortcutHelp({ onClose }: ShortcutHelpProps) {
     { key: "Enter", desc: "Send the chat message" },
     { key: "Shift + Enter", desc: "Add a line in the chat composer" },
     { key: "Ctrl + K", desc: "Open command palette" },
+    { key: "Ctrl + B", desc: "Show or hide the sidebar" },
     { key: "Ctrl + Enter", desc: "Submit a Hive Code run" },
     { key: "Ctrl + 1", desc: "Switch to Conversation tab" },
     { key: "Ctrl + 2", desc: "Switch to Changes tab" },

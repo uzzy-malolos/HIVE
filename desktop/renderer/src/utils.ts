@@ -30,6 +30,11 @@ export function commitBlockedCopy(reason: DesktopChangesDiff["commitEligibility"
   }
 }
 
+/** Last path segment of a Windows or POSIX folder path, for display. */
+export function projectName(folder: string): string {
+  return folder.split(/[\\/]/).filter(Boolean).at(-1) ?? folder;
+}
+
 export function titleCase(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }

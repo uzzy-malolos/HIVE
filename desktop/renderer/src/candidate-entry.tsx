@@ -115,7 +115,7 @@ function createMockBridge(targetScenario: string): ExtendedBridge {
     async request(command: DesktopCommand): Promise<DesktopEvent> {
       switch (command.type) {
         case "repository.list":
-          return { type: "repository.listed", timestamp: now, repositories: [{ path: "C:\\HIVE", lastOpenedAt: now }] };
+          return { type: "repository.listed", timestamp: now, repositories: [{ path: "C:\\HIVE", lastOpenedAt: now }, { path: "C:\\source\\tlwc-website", lastOpenedAt: now }, { path: "D:\\thesis\\bay-land-conversion", lastOpenedAt: now }] };
         case "chat.list":
           return {
             type: "chat.listed",

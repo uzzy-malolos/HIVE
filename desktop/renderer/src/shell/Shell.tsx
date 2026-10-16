@@ -1,6 +1,6 @@
 import React from "react";
 import type { DesktopMode } from "../state";
-import { Sidebar, type SidebarSession } from "./Sidebar";
+import { Sidebar, type SidebarRecentProject, type SidebarSession } from "./Sidebar";
 import { Titlebar } from "./Titlebar";
 import type { WorkspaceTab } from "./WorkspaceTabs";
 
@@ -32,7 +32,12 @@ export interface ShellProps {
   status?: ShellStatusItem[];
   setRepositoryPath?: (path: string) => void;
   onOpenRepository?: (path: string) => Promise<void>;
+  onPickRepository?: () => Promise<void>;
+  recentProjects?: SidebarRecentProject[];
   busy?: boolean;
+  /** When false the global sidebar is hidden (Ctrl+B or the titlebar toggle). */
+  sidebarOpen?: boolean;
+  onToggleSidebar?: () => void;
 
   children: React.ReactNode;
 }
@@ -59,7 +64,11 @@ export function Shell({
   status,
   setRepositoryPath,
   onOpenRepository,
+  onPickRepository,
+  recentProjects,
   busy,
+  sidebarOpen = true,
+  onToggleSidebar,
   children,
 }: ShellProps) {
   return (
@@ -76,9 +85,12 @@ export function Shell({
         onOpenModelPicker={onOpenModelPicker}
         onOpenSettings={onOpenSettings}
         worker={worker}
+        sidebarOpen={sidebarOpen}
+        onToggleSidebar={onToggleSidebar}
       />
 
       <div className="hive-body">
+        {sidebarOpen ? (
         <Sidebar
           mode={mode}
           onSelectMode={onSelectMode}
@@ -90,8 +102,11 @@ export function Shell({
           repositoryPath={repositoryPath}
           setRepositoryPath={setRepositoryPath}
           onOpenRepository={onOpenRepository}
+          onPickRepository={onPickRepository}
+          recentProjects={recentProjects}
           busy={busy}
         />
+        ) : null}
         <main className="hive-main">
           {children}
         </main>

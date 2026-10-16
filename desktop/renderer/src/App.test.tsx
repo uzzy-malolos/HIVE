@@ -229,6 +229,16 @@ describe("HIVE desktop cockpit", () => {
     expect(screen.getByText(/No active work/i)).toBeInTheDocument();
   });
 
+  it("hides and restores the sidebar with Ctrl+B and the titlebar toggle", async () => {
+    render(<App api={bridge()} />);
+    const user = userEvent.setup();
+    expect(screen.getByRole("navigation", { name: /global navigation/i })).toBeInTheDocument();
+    await user.keyboard("{Control>}b{/Control}");
+    expect(screen.queryByRole("navigation", { name: /global navigation/i })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Show sidebar" }));
+    expect(screen.getByRole("navigation", { name: /global navigation/i })).toBeInTheDocument();
+  });
+
   it("keeps the latest repository epoch when A resolves after B and rejects late A results", async () => {
     let resolveA!: (event: DesktopEvent) => void;
     const listeners = new Set<(event: DesktopEvent) => void>();
@@ -250,7 +260,7 @@ describe("HIVE desktop cockpit", () => {
     await user.click(screen.getByRole("button", { name: /^codex$/i }));
     const input = screen.getByLabelText(/repository path/i);
     await user.type(input, "C:\\A"); await user.click(screen.getByRole("button", { name: /^open$/i }));
-    await user.clear(input); await user.type(input, "C:\\B"); await user.click(screen.getByRole("button", { name: /open another/i }));
+    await user.clear(input); await user.type(input, "C:\\B"); await user.click(screen.getByRole("button", { name: /^open$/i }));
     // Seed repository B state directly so the epoch-guard assertions below remain valid
     api.emit({ type: "desktop.ready", timestamp: now, requestId: "open-b", repositoryRoot: "C:\\B" });
     api.emit({ type: "thread.listed", timestamp: now, requestId: "list-b", repositoryRoot: "C:\\B", threads: [threadB] });
@@ -264,6 +274,8 @@ describe("HIVE desktop cockpit", () => {
     expect(screen.getByRole("button", { name: /Repository B thread/i })).toBeInTheDocument();
     expect(screen.queryByText(/Late A thread/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Late A error/i)).not.toBeInTheDocument();
+    const sidebar = screen.getByRole("navigation", { name: /global navigation/i });
+    await user.click(within(sidebar).getByRole("button", { name: /switch project, current B$/i }));
     expect(screen.getByLabelText(/repository path/i)).toHaveValue("C:\\B");
   });
 
