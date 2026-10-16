@@ -29,18 +29,33 @@ try {
   // Ignore errors reading .env
 }
 
-const result = await runCoderCli(process.argv.slice(2), {
-  stream(line) {
-    process.stdout.write(`${line}\n`);
-  },
-});
+const controller = new AbortController();
+const cliArgs = process.argv.slice(2);
+const optionArgs = cliArgs.slice(0, cliArgs.indexOf("--") < 0 ? cliArgs.length : cliArgs.indexOf("--"));
+const formatIndex = optionArgs.indexOf("--output-format");
+const outputFormat = optionArgs.find((arg) => arg.startsWith("--output-format="))?.slice("--output-format=".length)
+  ?? (formatIndex >= 0 ? optionArgs[formatIndex + 1] : undefined);
+const structuredOutput = optionArgs.includes("--json") || outputFormat === "json" || outputFormat === "streaming-json";
+const interrupt = () => controller.abort("User interrupted the CLI.");
+process.once("SIGINT", interrupt);
+let result;
+try {
+  result = await runCoderCli(cliArgs, {
+    signal: controller.signal,
+    stream(line) {
+      process.stdout.write(`${line}\n`);
+    },
+  });
+} finally {
+  process.removeListener("SIGINT", interrupt);
+}
 
 // "__TUI_STARTED__" is a sentinel: the TUI ran and exited cleanly.
 // Do not print it to stdout.
 if (result.output === "__TUI_STARTED__") {
   process.exitCode = result.exitCode;
 } else if (result.output) {
-  const stream = result.exitCode === 0 ? process.stdout : process.stderr;
+  const stream = structuredOutput || result.exitCode === 0 ? process.stdout : process.stderr;
   stream.write(`${result.output}\n`);
   process.exitCode = result.exitCode;
 } else {

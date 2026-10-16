@@ -18,6 +18,9 @@ export interface CodeCommandOptions {
   model?: string;
   approval: ApprovalPolicy;
   resume?: string;
+  outputStyleId?: string;
+  skillId?: string;
+  skillArguments?: string;
   noTui: boolean;
   json: boolean;
   noMotion: boolean;
@@ -32,6 +35,9 @@ const VALUE_FLAGS = new Set([
   "--model",
   "--approval",
   "--resume",
+  "--output-style",
+  "--skill",
+  "--skill-args",
   "--queen",
   "--planner",
   "--scout",
@@ -143,6 +149,7 @@ export function parseCodeCommandArgs(args: readonly string[]): CodeCommandOption
   let model: string | undefined;
   let approval: ApprovalPolicy = "changes";
   let resume: string | undefined;
+  let outputStyleId: string | undefined, skillId: string | undefined, skillArguments: string | undefined;
   let noTui = false;
   let json = false;
   let noMotion = false;
@@ -203,6 +210,12 @@ export function parseCodeCommandArgs(args: readonly string[]): CodeCommandOption
       approval = parseEnum(flag, value, ["safe", "changes", "always"] as const);
     } else if (flag === "--resume") {
       resume = value;
+    } else if (flag === "--output-style") {
+      outputStyleId = value;
+    } else if (flag === "--skill") {
+      skillId = value;
+    } else if (flag === "--skill-args") {
+      skillArguments = value;
     } else {
       const role = ROLE_FLAGS[flag];
       roleBindings[role] = parseRoleBinding(flag, value);
@@ -216,6 +229,7 @@ export function parseCodeCommandArgs(args: readonly string[]): CodeCommandOption
   if ((provider === undefined) !== (model === undefined)) {
     throw new Error("--provider and --model must be provided together.");
   }
+  if (skillArguments !== undefined && !skillId) throw new Error("--skill-args requires --skill");
 
   // Machine output never enters an interactive renderer or emits motion frames.
   if (json) {
@@ -232,6 +246,9 @@ export function parseCodeCommandArgs(args: readonly string[]): CodeCommandOption
     model,
     approval,
     resume,
+    ...(outputStyleId === undefined ? {} : { outputStyleId }),
+    ...(skillId === undefined ? {} : { skillId }),
+    ...(skillArguments === undefined ? {} : { skillArguments }),
     noTui,
     json,
     noMotion,
@@ -268,6 +285,9 @@ Provider routing:
 
 Session and output:
   --resume <session-id>         resume a saved session; objective is optional
+  --output-style <style-id>     explicitly select a trusted plugin final-response style
+  --skill <skill-id>            invoke a trusted skill with literal argument substitution
+  --skill-args <text>           arguments for the explicitly invoked skill; no shell execution
   --no-tui                      stream plain terminal logs instead of the TUI
   --json                        emit newline-delimited JSON (NDJSON) events only on stdout;
                                 implies --no-tui and --no-motion

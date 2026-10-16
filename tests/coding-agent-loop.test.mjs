@@ -1,10 +1,27 @@
 import assert from "node:assert/strict";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { StructuredAgentLoop, parseAgentTurn } from "../dist/coding/agent-loop.js";
 import { createRuntimeReporter, formatCodingFinalReport, formatRuntimeEventJson } from "../dist/coding/output.js";
 import { materializeBuilderTasks, parseCodingPlan } from "../dist/coding/planner.js";
 import { findDirtyScopeConflicts, pathMatchesScope } from "../dist/coding/repository.js";
+import { RepositoryToolService } from "../dist/coding/tools.js";
+
+const contractTask = {
+  id: "contract-builder", sessionId: "contract-session", role: "builder", title: "Tool contract",
+  objective: "Write and inspect the assigned file", status: "working", providerId: "fixture", dependencies: [],
+  fileScope: ["notes/contract.txt"], expectedOutput: "The assigned file", completionCriteria: ["File created and read"],
+  validationCommands: [], depth: 0, attempt: 1, maxAttempts: 1, createdAt: "2026-10-16T00:00:00.000Z",
+};
+
+function advertisedRepositoryTools(prompt) {
+  const prefix = "Available repository tools with their actual argument schemas:\n";
+  assert.ok(prompt.includes(prefix), "the provider must receive the repository tool contract");
+  return JSON.parse(prompt.slice(prompt.indexOf(prefix) + prefix.length).split("\n")[0]);
+}
 
 const planJson = JSON.stringify({
   summary: "Implement a bounded runtime",
@@ -128,6 +145,84 @@ test("structured agent loop executes bounded tools and accumulates usage", async
   assert.ok(events.some((event) => event.type === "subagent.tool_call"));
 });
 
+test("structured agents receive executable built-in file tool schemas", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "hive-tool-contract-"));
+  const content = `Tool contract ${Date.now()}\n`;
+  let turn = 0;
+  try {
+    const result = await new StructuredAgentLoop().run({
+      task: contractTask, cwd: root, sharedContext: "Only the assigned file may be edited.",
+      tools: new RepositoryToolService({ repositoryRoot: root, sessionId: contractTask.sessionId, approvalPolicy: "changes" }),
+      signal: new AbortController().signal,
+      completionClient: { async complete(request) {
+        const definitions = advertisedRepositoryTools(request.systemPrompt);
+        const definitionsByName = new Map(definitions.map((definition) => [definition.name, definition]));
+        assert.deepEqual([...definitionsByName.keys()], [
+          "read_file", "list_directory", "search_text", "search_symbols", "create_file", "write_file",
+          "edit_file", "apply_patch", "inspect_diff", "run_command", "run_test", "read_command_output",
+        ]);
+        assert.deepEqual(definitionsByName.get("create_file").inputSchema.required, ["path", "content"]);
+        assert.deepEqual(definitionsByName.get("edit_file").inputSchema.required, ["path", "search"]);
+        assert.ok(definitionsByName.get("edit_file").inputSchema.properties.replacement);
+        assert.deepEqual(definitionsByName.get("apply_patch").inputSchema.required, ["patch"]);
+        assert.match(definitionsByName.get("apply_patch").description, /unified Git text diff/);
+        assert.deepEqual(definitionsByName.get("read_command_output").inputSchema.required, ["commandId"]);
+        assert.equal(definitions.length, definitionsByName.size, "tools must be advertised exactly once");
+        if (turn++ === 0) return { output: JSON.stringify({ done: false, toolCalls: [
+          { name: definitionsByName.get("create_file").name, arguments: { path: "notes/contract.txt", content } },
+        ] }) };
+        if (turn === 2) {
+          assert.match(request.prompt, /created notes\/contract\.txt/);
+          return { output: JSON.stringify({ done: false, toolCalls: [
+            { name: definitionsByName.get("read_file").name, arguments: { path: "notes/contract.txt" } },
+          ] }) };
+        }
+        const readResults = JSON.parse(request.prompt.split("[Tool results 2]\n")[1]);
+        assert.equal(readResults[0].name, "read_file");
+        assert.equal(readResults[0].ok, true);
+        assert.equal(readResults[0].output, content, "the provider must receive the real tool result");
+        return { output: JSON.stringify({ done: true, summary: "Created and inspected the assigned file" }) };
+      } },
+    });
+    assert.equal(result.toolCalls, 2);
+    assert.equal(await fs.readFile(path.join(root, "notes/contract.txt"), "utf8"), content);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test("executor capabilities restrict advertised built-ins while preserving additional tools", async () => {
+  for (const builtinToolNames of [["read_file", "create_file", "read_file"], []]) await new StructuredAgentLoop().run({
+    task: contractTask, cwd: process.cwd(), sharedContext: "Contract test", signal: new AbortController().signal,
+    tools: {
+      builtinToolNames,
+      toolDefinitions: [{ name: "mcp__fixture__lookup", description: "Lookup", inputSchema: { type: "object", properties: {} } }],
+      async execute() { throw new Error("No execution expected"); },
+    },
+    completionClient: { async complete(request) {
+      assert.deepEqual(advertisedRepositoryTools(request.systemPrompt).map((definition) => definition.name), [...new Set(builtinToolNames)]);
+      assert.equal(request.systemPrompt.split('"name":"mcp__fixture__lookup"').length - 1, 1);
+      assert.ok(!request.systemPrompt.includes('"name":"run_command"'));
+      return { output: JSON.stringify({ done: true, summary: "Inspected contract" }) };
+    } },
+  });
+});
+
+test("invalid capability metadata and duplicate tool names fail before contacting the provider", async () => {
+  const definition = (name) => ({ name, description: "Fixture", inputSchema: { type: "object" } });
+  for (const metadata of [
+    { builtinToolNames: ["unsupported"] },
+    { toolDefinitions: [definition("write_file")] },
+    { toolDefinitions: [definition("mcp__fixture__lookup"), definition("mcp__fixture__lookup")] },
+  ]) {
+    let contacted = false;
+    await assert.rejects(new StructuredAgentLoop().run({
+      task: contractTask, cwd: process.cwd(), sharedContext: "Contract test", signal: new AbortController().signal,
+      tools: { ...metadata, async execute() { throw new Error("No execution expected"); } },
+      completionClient: { async complete() { contacted = true; throw new Error("No provider request expected"); } },
+    }), /unsupported built-in tool|Duplicate or reserved agent tool definition/);
+    assert.equal(contacted, false);
+  }
+});
+
 test("read-only agent roles cannot invoke write tools", async () => {
   let toolExecuted = false;
   const responses = [
@@ -159,7 +254,11 @@ test("read-only agent roles cannot invoke write tools", async () => {
     },
     cwd: process.cwd(),
     sharedContext: "Context",
-    completionClient: { async complete() { return { output: responses.shift() }; } },
+    completionClient: { async complete(request) {
+      assert.ok(advertisedRepositoryTools(request.systemPrompt).every((definition) =>
+        !["create_file", "write_file", "edit_file", "apply_patch"].includes(definition.name)), "read-only roles must not be offered writes");
+      return { output: responses.shift() };
+    } },
     tools: {
       async execute() {
         toolExecuted = true;

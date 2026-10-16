@@ -3,11 +3,27 @@
  * TuiState type, initial state factory, and pure update helpers.
  */
 
+import type { HiveMode } from "../config.js";
+import type { CliConversation } from "./conversations.js";
 import {
   aggregateSubagentCounts,
   type RuntimeEvent,
   type SubagentTask,
 } from "../coding/types.js";
+import {
+  permissionPromptText,
+  type PermissionDecision,
+} from "./interaction.js";
+import type { ComposerPicker } from "./picker.js";
+import type { McpUserInputRequest } from "../extensions/mcp-client-host.js";
+import { redactStreamingText } from "../security/secrets.js";
+import { prefersAsciiGlyphs } from "./glyphs.js";
+import {
+  renderTranscriptBody,
+  scrollOffsetAfterGrowth,
+  sessionFrameWidth,
+  transcriptViewportRows,
+} from "./transcript-view.js";
 
 export type TuiMode =
   | "default"
@@ -23,6 +39,8 @@ export interface TuiState {
   agents: number;
   contextPercent: number;
   input: string;
+  /** Cursor index into `input`. The composer draws it. */
+  cursor: number;
   history: string[];
   historyIndex: number;
   outputLines: string[];
@@ -47,6 +65,36 @@ export interface TuiState {
   selectedSubagentId?: string;
   recentRuntimeEvents: RuntimeEvent[];
   motionEnabled: boolean;
+  /** HIVE safety mode. Distinct from the panel `mode` above. */
+  sessionMode: HiveMode;
+  sessionId?: string;
+  editsApproved: boolean;
+  pendingPermission?: PermissionDecision;
+  permissionPrompt?: string;
+  /** Highlighted selector option while a permission is pending: 0 allows, 1 declines. */
+  permissionChoice?: number;
+  /** ASCII drawing characters instead of Unicode box and bullet glyphs. */
+  asciiGlyphs?: boolean;
+  /** When the current turn started running. Drives the working line's elapsed time. */
+  turnStartedAt?: number;
+  /** Open slash or file picker. Absent when the composer is plain text. */
+  picker?: ComposerPicker;
+  /** Assistant prose that has arrived but is not yet committed to the transcript. */
+  liveText?: string;
+  /** Drafts submitted while a turn is running. They start, in order, when it finishes. */
+  messageQueue: string[];
+  /** Tool-card index. Absent follows the latest card. */
+  toolCardFocus?: number;
+  /** Workspace directory basename. Absent until the session knows its directory. */
+  workspaceName?: string;
+  /** Current branch from `git rev-parse --abbrev-ref HEAD`. Absent when that command fails. */
+  gitBranch?: string;
+  /** Runtime command IDs point to the tool card that owns their output. */
+  commandCardIds?: Record<string, string>;
+  conversation?: CliConversation;
+  contextChars?: number;
+  /** Transient server input. Never project this request or its answer into conversation records. */
+  mcpInput?: { request: McpUserInputRequest; scrollOffset: number; error?: string };
 }
 
 const RECENT_RUNTIME_EVENT_LIMIT = 100;
@@ -58,6 +106,7 @@ const SUBAGENT_EVENT_STATUS: Record<string, SubagentTask["status"]> = {
   "subagent.status_changed": "working",
   "subagent.progress": "working",
   "subagent.tool_call": "working",
+  "subagent.tool_result": "working",
   "subagent.file_changed": "working",
   "subagent.blocked": "blocked",
   "subagent.retrying": "retrying",
@@ -195,13 +244,15 @@ export function initialState(): TuiState {
     agents: 0,
     contextPercent: 0,
     input: "",
+    cursor: 0,
     history: [],
     historyIndex: -1,
-    outputLines: ["  Ready when you are. Type /help for commands."],
+    outputLines: ["  Session ready. Type a task, or /help."],
     selectedPanel: "main",
     width: cols,
     height: rows,
     colorEnabled,
+    asciiGlyphs: prefersAsciiGlyphs(),
     running: false,
     taskStatus: "idle",
     transcript: [],
@@ -213,6 +264,23 @@ export function initialState(): TuiState {
     subagentsExpanded: false,
     recentRuntimeEvents: [],
     motionEnabled,
+    sessionMode: "guarded",
+    editsApproved: false,
+    messageQueue: [],
+  };
+}
+
+function reflowScroll(before: TuiState, after: TuiState): TuiState {
+  const beforeCount = renderTranscriptBody(before, sessionFrameWidth(before.width)).length;
+  const afterCount = renderTranscriptBody(after, sessionFrameWidth(after.width)).length;
+  return {
+    ...after,
+    scrollOffset: scrollOffsetAfterGrowth(
+      before.scrollOffset,
+      beforeCount,
+      afterCount,
+      transcriptViewportRows(after),
+    ),
   };
 }
 
@@ -220,13 +288,20 @@ export function withOutput(
   state: TuiState,
   lines: string[]
 ): TuiState {
-  const MAX_LINES = 200;
-  const next = [...state.outputLines, ...lines].slice(-MAX_LINES);
-  return { ...state, outputLines: next };
+  const outputLines = [...state.outputLines, ...lines].slice(-200);
+  const transcript = [...state.transcript, ...lines].slice(-1000);
+  return reflowScroll(state, { ...state, outputLines, transcript });
 }
 
-export function withInput(state: TuiState, input: string): TuiState {
-  return { ...state, input };
+export function withInput(state: TuiState, input: string, cursor = input.length): TuiState {
+  const next = Number.isFinite(cursor) ? Math.floor(cursor) : input.length;
+  return { ...state, input, cursor: Math.max(0, Math.min(input.length, next)) };
+}
+
+/** Replace transcript entries without clearing permission, live text, or the pin. */
+export function replaceTranscript(state: TuiState, transcript: readonly string[]): TuiState {
+  const lines = [...transcript].slice(-1000);
+  return reflowScroll(state, { ...state, transcript: lines });
 }
 
 export function withHistory(
@@ -242,7 +317,7 @@ export function withSize(
   width: number,
   height: number
 ): TuiState {
-  return { ...state, width, height };
+  return reflowScroll(state, { ...state, width, height });
 }
 
 export function withRunning(
@@ -269,18 +344,104 @@ export function withClear(state: TuiState): TuiState {
     ...state,
     outputLines: ["  Output cleared."],
     transcript: [],
+    scrollOffset: 0,
     selectedPanel: "main",
+    pendingPermission: undefined,
+    permissionPrompt: undefined,
+    picker: undefined,
+    liveText: undefined,
+    messageQueue: [],
+    toolCardFocus: undefined,
+    commandCardIds: {},
+  };
+}
+
+export function withSessionMode(state: TuiState, sessionMode: HiveMode): TuiState {
+  return {
+    ...state,
+    sessionMode,
+    editsApproved: false,
+    pendingPermission: undefined,
+    permissionPrompt: undefined,
+  };
+}
+
+export function withSessionId(state: TuiState, sessionId: string): TuiState {
+  return { ...state, sessionId };
+}
+
+export function withEditsApproved(state: TuiState, editsApproved: boolean): TuiState {
+  return { ...state, editsApproved };
+}
+
+export function withPicker(state: TuiState, picker: ComposerPicker | undefined): TuiState {
+  return { ...state, picker };
+}
+
+export function withLiveText(state: TuiState, text: string | undefined): TuiState {
+  let next: TuiState;
+  if (!text?.trim()) {
+    next = state.liveText ? { ...state, liveText: undefined } : state;
+  } else {
+    const clean = redactStreamingText(text);
+    if (!clean.trim() || clean.trim() === "[REDACTED]") next = { ...state, liveText: undefined };
+    else if (clean === state.liveText) return state;
+    else next = { ...state, liveText: clean };
+  }
+  if (next === state) return state;
+  return reflowScroll(state, next);
+}
+
+export function commitLiveText(state: TuiState): TuiState {
+  const text = state.liveText;
+  if (!text?.trim()) {
+    return state.liveText ? reflowScroll(state, { ...state, liveText: undefined }) : state;
+  }
+  const cleared: TuiState = { ...state, liveText: undefined };
+  if (cleared.transcript[cleared.transcript.length - 1] === text) return reflowScroll(state, cleared);
+  const transcript = [...cleared.transcript, text].slice(-1000);
+  return reflowScroll(state, { ...cleared, transcript });
+}
+
+export function withTranscript(state: TuiState, transcript: readonly string[]): TuiState {
+  const lines = [...transcript];
+  return {
+    ...state,
+    transcript: lines,
+    outputLines: lines.slice(-200),
+    liveText: undefined,
+    picker: undefined,
+    pendingPermission: undefined,
+    permissionPrompt: undefined,
+    scrollOffset: 0,
+    commandCardIds: {},
+  };
+}
+
+export function withPendingPermission(
+  state: TuiState,
+  decision: PermissionDecision | undefined,
+): TuiState {
+  return {
+    ...state,
+    pendingPermission: decision,
+    permissionPrompt: decision ? permissionPromptText(decision) : undefined,
+    permissionChoice: 0,
   };
 }
 
 export function appendTranscriptLine(state: TuiState, line: string): TuiState {
   const MAX_LINES = 1000;
   const transcript = [...state.transcript, line].slice(-MAX_LINES);
-  return { ...state, transcript };
+  return reflowScroll(state, { ...state, transcript });
 }
 
+const ACTIVE_STATUSES: ReadonlySet<TuiState["taskStatus"]> = new Set(["running", "verifying"]);
+
 export function setTaskStatus(state: TuiState, status: TuiState["taskStatus"]): TuiState {
-  return { ...state, taskStatus: status };
+  const active = ACTIVE_STATUSES.has(status);
+  const turnStartedAt = active ? (ACTIVE_STATUSES.has(state.taskStatus) ? state.turnStartedAt : undefined) ?? Date.now() : undefined;
+  return { ...state, taskStatus: status, turnStartedAt };
 }
 
 export function setRuntimeInfo(state: TuiState, activeTask?: string, provider?: string, model?: string): TuiState {
@@ -293,12 +454,24 @@ export function setRuntimeInfo(state: TuiState, activeTask?: string, provider?: 
 }
 
 export function clearTranscript(state: TuiState): TuiState {
-  return { ...state, transcript: [], scrollOffset: 0 };
+  return {
+    ...state,
+    transcript: [],
+    scrollOffset: 0,
+    liveText: undefined,
+    picker: undefined,
+    toolCardFocus: undefined,
+    commandCardIds: {},
+  };
+}
+
+export function withMessageQueue(state: TuiState, messageQueue: readonly string[]): TuiState {
+  return { ...state, messageQueue: [...messageQueue] };
 }
 
 export function trimTranscript(state: TuiState, maxLines: number): TuiState {
   if (state.transcript.length <= maxLines) return state;
-  return { ...state, transcript: state.transcript.slice(-maxLines) };
+  return reflowScroll(state, { ...state, transcript: state.transcript.slice(-maxLines) });
 }
 
 export function withScoutInfo(state: TuiState, signals: number, docs: number, riskNotes: number): TuiState {

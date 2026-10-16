@@ -96,9 +96,11 @@ test("run manager builds only the persisted deterministic objective and gates sa
 
   const launches = [];
   const completions = new Map();
+  const runDiagnostics = [];
   const manager = new DefaultDesktopRunManager({
     sessionIdFactory: (() => { let id = 0; return () => `session-${++id}`; })(),
     threadStoreFactory: (root) => new JsonThreadStore(root),
+    onEvent: (event) => runDiagnostics.push(event),
     launcher(input) {
       launches.push(input);
       const pending = deferred();
@@ -132,7 +134,7 @@ test("run manager builds only the persisted deterministic objective and gates sa
   );
   completions.get(other.codingSessionId).resolve(session(await realpath(repoB), other.codingSessionId));
   completions.get(followUp.codingSessionId).resolve(session(await realpath(repoA), followUp.codingSessionId));
-  await eventually(async () => assert.equal((await storeA.load("thread-a")).runs.at(-1).status, "completed"));
+  await eventually(async () => { const saved = await storeA.load("thread-a"); assert.equal(saved.runs.at(-1).status, "completed", JSON.stringify({ runs: saved.runs, events: runDiagnostics.slice(-12) })); });
   await eventually(async () => {
     const storeB = new JsonThreadStore(repoB);
     assert.equal((await storeB.load("thread-c")).runs[0].status, "completed");

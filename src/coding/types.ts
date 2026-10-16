@@ -41,6 +41,14 @@ export type TerminalSubagentStatus =
 export type CodeMode = "auto" | "plan" | "review";
 export type ApprovalPolicy = "safe" | "changes" | "always";
 
+export interface ToolPermissionRequest {
+  tool: string;
+  description: string;
+  input: Record<string, unknown>;
+  external: boolean;
+  alwaysAsk?: boolean;
+}
+
 export type CodingSessionStatus =
   | "created"
   | "planning"
@@ -92,6 +100,10 @@ export interface SubagentTask {
 export interface RepositorySnapshot {
   root: string;
   worktreePath?: string;
+  /** Content fingerprint at the last persisted paused or terminal boundary. */
+  worktreeFingerprint?: string;
+  /** Commit checked in the managed worktree, distinct from the primary root snapshot. */
+  worktreeBaseCommit?: string;
   capturedAt: string;
   baseCommit?: string;
   branch?: string;
@@ -336,6 +348,8 @@ export interface CodingSessionRecord {
   schemaVersion: typeof CODING_SESSION_SCHEMA_VERSION;
   id: string;
   objective: string;
+  pluginAgentId?: string;
+  outputStyleId?: string;
   mode: CodeMode;
   approvalPolicy: ApprovalPolicy;
   status: CodingSessionStatus;
@@ -343,6 +357,15 @@ export interface CodingSessionRecord {
   updatedAt: string;
   cancelledAt?: string;
   cancellationReason?: string;
+  /** Set by `hive sessions archive`. Absent or false means the session is active in lists. */
+  archived?: boolean;
+  archivedAt?: string;
+  /** Source session id when this record was created by `hive sessions fork`. */
+  forkedFrom?: string;
+  /** Prior turns sharing this session's managed worktree; never current evidence. */
+  turnHistory?: CodingSessionTurn[];
+  /** First session-global event sequence belonging to the current turn. */
+  turnStartSequence?: number;
   repository: RepositorySnapshot;
   plan?: CodingPlanRecord;
   tasks: SubagentTask[];
@@ -361,6 +384,8 @@ export interface CodingSessionRecord {
   /** Session reconciliation result, if resumed. */
   reconciliation?: SessionReconciliation;
 }
+
+export type CodingSessionTurn = Omit<CodingSessionRecord, "turnHistory">;
 
 // ---------------------------------------------------------------------------
 // Verdict-related events
@@ -406,8 +431,18 @@ export interface RuntimeEventPayloadMap {
   };
   "subagent.tool_call": {
     subagentId: string;
+    callId?: string;
     tool: string;
     input?: JsonValue;
+  };
+  "subagent.tool_result": {
+    subagentId: string;
+    callId: string;
+    tool: string;
+    ok: boolean;
+    output: string;
+    cancelled?: boolean;
+    commandId?: string;
   };
   "subagent.file_changed": {
     subagentId: string;
@@ -437,6 +472,7 @@ export interface RuntimeEventPayloadMap {
   "command.started": {
     commandId: string;
     taskId?: string;
+    toolCallId?: string;
     command: string;
     cwd: string;
   };

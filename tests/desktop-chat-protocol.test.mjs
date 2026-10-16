@@ -154,6 +154,12 @@ test("chat.send accepts an agent flag and rejects non-boolean agent", () => {
   assert.throws(() => validateDesktopCommand({ ...base, input: { ...base.input, agent: "yes" } }));
 });
 
+test("chat.send accepts regenerate and rejects a non-boolean flag", () => {
+  const base = { requestId: "r-1", type: "chat.send", input: { conversationId: "chat-1789200000000-ab12", content: "look", regenerate: true } };
+  assert.doesNotThrow(() => validateDesktopCommand(base));
+  assert.throws(() => validateDesktopCommand({ ...base, input: { ...base.input, regenerate: "yes" } }));
+});
+
 test("chat.tool event validates and rejects bad seq or tool shape", () => {
   const ok = { type: "chat.tool", timestamp: now, conversationId: "chat-1789200000000-ab12", turnId: "turn-a-1", seq: 0, tool: { name: "read_file", label: "read src/foo.ts" } };
   assert.doesNotThrow(() => validateDesktopEvent(ok));

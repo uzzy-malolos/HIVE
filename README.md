@@ -16,13 +16,15 @@ The previous sibling folders (`hive-cloud`, `the-hive-skill`, `HiveMind`, and te
 
 ## Provider Setup
 
-HIVE supports multiple model providers (OpenAI, Anthropic, OpenRouter, Ollama, Google). Providers must be configured before they can be used. **Never store raw API keys directly in the CLI commands or configurations.** 
+Choose **BYOK** (your own API key), a **local model server**, or **ChatGPT subscription sign-in through installed Codex**. Local servers can run without a key. HIVE saves API-key environment references; subscription credentials stay in Codex's OS keyring under a separate HIVE account. See [provider setup](docs/CLI_BYOK_LOCAL.md) and [ChatGPT setup and limits](docs/CLI_CHATGPT_SUBSCRIPTION.md).
 
 ### Interactive Setup (Recommended)
-The easiest way to configure a provider is to use the interactive wizard, which will prompt you for the required details, test the connection, and approve the provider automatically:
+The wizard offers BYOK, local and ChatGPT subscription modes. API/local setup asks for the actual model and tests its health prerequisite; subscription setup prints explicit sign-in instructions. Role defaults remain unchanged unless you explicitly replace them:
 ```bash
 hive providers setup
 ```
+
+Inside HIVE, use `/connect` to choose either mode, then complete its editable registration command. Use `/providers test ID`, `/providers approve ID` and `/model ID/MODEL` to select it for the conversation. `/providers models ID` lists actual models and lets you select one. This choice persists across restart without changing your default roles.
 
 ### Manual Setup
 For CI/CD or power-user configuration, you can add providers manually.
@@ -45,9 +47,15 @@ Add an OpenRouter provider:
 hive providers add --id openrouter-main --kind openrouter --base-url https://openrouter.ai/api/v1 --api-key-env OPENROUTER_API_KEY --model qwen/qwen3-coder
 ```
 
-Add a local Ollama provider:
+Add a local Ollama provider (replace `YOUR_INSTALLED_MODEL` with its actual ID):
 ```bash
-hive providers add --id local-ollama --kind ollama --base-url http://localhost:11434 --model llama3
+hive providers add --id local-ollama --preset ollama --model YOUR_INSTALLED_MODEL
+```
+
+Add a keyless local OpenAI-compatible server:
+```bash
+hive providers add --id local-models --preset local --base-url http://127.0.0.1:1234/v1 --model YOUR_LOADED_MODEL
+hive providers models local-models
 ```
 
 ### Approve and Test a Provider
@@ -224,7 +232,15 @@ Artifacts are written to `release/` as a per-user NSIS setup executable and a no
 See [Windows desktop release and operator guide](docs/WINDOWS_DESKTOP_RELEASE.md) for packaging, signing, checksums, smoke testing, storage, and release procedures.
 
 ## CLI Commands
-- `hive` (no args): View the interactive terminal home screen / dashboard.
+- `hive` (no args): Open the interactive coding terminal.
+- `hive "fix the parser"`: Open the terminal with an initial request.
+- `hive -p "fix the parser" --json`: Run headlessly; structured results stay on stdout, including failures.
+- `hive -p - --output-format streaming-json`: Explicitly read a prompt from stdin and stream JSONL.
+- `hive --continue` or `hive --resume <cli-id>`: Restore a CLI conversation; add a prompt for a new turn.
+- `hive --resume <cli-id> --fork-session`: Restore context into a new conversation and independent coding worktree before applying a new prompt.
+- `hive --model <provider/model> --image <file> "inspect this screenshot"`: Use a conversation-local model and actual image input.
+- `hive providers setup` or `/connect` inside HIVE: Choose BYOK, a local provider or Codex-managed ChatGPT sign-in, then select an actual model.
+- `hive --plan "inspect this change"` or `hive --review`: Use an invocation-local read-only mode.
 - `hive code "<objective>"`: Start a multi-agent coding session led by the Queen.
 - `hive code --resume <session-id>`: Reinspect the repository and continue a saved coding session.
 - `hive run "<task>"`: Start a new task flight.
@@ -238,14 +254,26 @@ See [Windows desktop release and operator guide](docs/WINDOWS_DESKTOP_RELEASE.md
 - `hive chat ["message"]`: Start the HIVE chatbot. With no argument it opens an interactive REPL; with a message it answers in one shot.
 - `hive hivebot "<task>"`: Run a **hivebot** swarm — delegates the task to the built-in hive-mind-council (Queen → Scout → Architect → Forger → Sentinel → Scribe), each role served by its assigned BYOK model.
 
+In the interactive terminal, Enter submits and Ctrl+J adds a newline. Messages submitted during a turn wait in order; Esc cancels the current turn and starts the next message after cancellation finishes. A second Esc or Ctrl+C clears the queue. Ctrl+Left/Right selects tool cards and Ctrl+O expands the selected card. The status line refreshes the Git branch after each turn. Tool previews use redacted results from the run.
+
+The terminal supports Unicode grapheme editing, bracketed multiline paste, history drafts, `/new`, `/resume`, `/continue`, `/rename`, `/fork`, `/compact`, `/context`, `/find`, `/export`, and `/copy`. `/model` selects an approved conversation-local model; `@"path with spaces":10-20` attaches bounded file context. `!command` or `/shell` runs an approved command with streaming output and cancellation. `/diff`, `/checkpoints`, and `/rewind files [id]` inspect or restore managed changes with explicit confirmation. `/rewind` alone changes the visible transcript.
+
+Use `/mcp`, `/skills`, `/skill`, `/plugins`, `/hooks` and `/lsp` for the opt-in extension ecosystem. Marketplace installation fetches pinned compatible bundles, initially disabled and untrusted; see [marketplace plugins](docs/CLI_MARKETPLACES.md). [Advanced protocols](docs/CLI_PROTOCOLS.md) cover modern MCP tasks/lifecycle/subscriptions, legacy streams/tasks, approved sampling/elicitation, five Claude hook handler types, explicit output styles, literal command arguments, specialist agents, dependency gates and LSP queries. `/mcp login`, `auth-status` and `logout` support [HTTP OAuth](docs/CLI_OAUTH.md). Follow-ups retain the coding worktree; `/fork` independently copies permitted staged/unstaged/untracked state. Session leases prevent concurrent CLI writers. See [CLI configuration](docs/CLI_EXTENSIONS.md) and [the parity record](docs/HIVE_CLI_PARITY.md) for exact verification and limits.
+
+`hive providers verify <id> --coding --json` checks actual buffered/streaming generation and a bounded file-write tool workflow with one configured provider/model. It can consume quota; see [provider verification](docs/CLI_PROVIDER_VERIFICATION.md) for limits and actual local-model evidence.
+
 ### Modes & Sessions
 - Coding modes: `hive code "<objective>" --mode <auto|plan|review>`.
 - Coding controls: `--max-agents`, `--max-retries`, `--provider`, `--model`, and `--approval <safe|changes|always>`.
 - Output controls: `--no-tui` streams readable events; `--json` emits undecorated newline-delimited JSON events.
 - `hive mode`: View the current operating mode.
 - `hive mode set <guarded|standard|autonomous|plan|review>`: Set the current safety mode.
-- `hive sessions` or `hive sessions list`: List coding sessions and legacy task cells.
+- `hive sessions` or `hive sessions list`: List coding sessions and legacy task cells. Archived sessions stay in the list with an `archived` flag. JSON output includes `archived`.
 - `hive sessions show <id>`: Show detailed JSON for either session format.
+- `hive sessions fork <id>`: Copy a settled coding session into an independent branch and worktree, preserving its index and permitted working files. Legacy task cells retain metadata-only fork restrictions. See [workspace forks](docs/CLI_WORKTREE_FORKS.md).
+- `hive sessions adopt <id>`: Preview deliberate external edits or an older saved fingerprint. The printed confirmation command accepts that exact inspected state and invalidates prior validation; files remain unchanged.
+- `hive sessions archive <id>`: Mark a session archived without deleting it. Archived sessions cannot be resumed until restored.
+- `hive sessions unarchive <id>`: Clear the archived flag.
 - `hive resume <id>` or `hive sessions resume <id>`: Set a saved session as active.
 - `hive agents`: List persisted subagents across coding sessions.
 - `hive agents show <id>`: Show a persisted subagent and its owning session.

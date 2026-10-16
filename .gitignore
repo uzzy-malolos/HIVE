@@ -1,6 +1,7 @@
 node_modules/
 dist/
 dist-desktop/
+dist-web/
 release/
 release-dist/
 playwright-report/
@@ -17,3 +18,4 @@ build/staging-app/
 logs/
 .next/
 *.log
+CHATGPT_CONTEXT.md

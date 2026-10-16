@@ -36,6 +36,8 @@ export interface DesktopChatSendInput {
   model?: string;
   ground?: boolean;
   agent?: boolean;
+  /** Rerun the stored last user turn. Drops the trailing assistant reply instead of appending another user message. */
+  regenerate?: boolean;
 }
 
 export interface DesktopChatRouteInput {
@@ -222,13 +224,22 @@ export class DesktopChatService {
     const record = await this.#loadRecord(input.conversationId);
     if (this.#controllers.has(record.id)) throw new Error("A chat turn is already streaming in this conversation.");
 
+    const history = record.messages.slice();
+    let promptContent = input.content;
+    if (input.regenerate) {
+      while (history.length > 0 && history[history.length - 1]?.role === "assistant") history.pop();
+      const lastUser = [...history].reverse().find((message) => message.role === "user");
+      if (!lastUser) throw new Error("Nothing to regenerate.");
+      promptContent = lastUser.content;
+    } else {
+      history.push({ role: "user", content: input.content, at: this.#clock() });
+    }
+
     const ground = input.ground ?? record.grounded ?? false;
     const selection: ChatRoleSelection = input.role ? this.#resolveRoleSelection(input.role) : record.role;
-    const slug = selection === "auto" ? classifyTask(input.content) : bindingToSlug(selection);
+    const slug = selection === "auto" ? classifyTask(promptContent) : bindingToSlug(selection);
     const override = input.providerId || input.model ? { providerId: input.providerId, model: input.model } : undefined;
 
-    const history = record.messages.slice();
-    history.push({ role: "user", content: input.content, at: this.#clock() });
     const persisted: ChatSessionRecord = { ...record, messages: history, role: selection, override, grounded: ground };
     await store.save(persisted);
     this.#emit({ type: "chat.changed", timestamp: this.#clock(), conversation: toConversation(persisted) });
@@ -241,7 +252,7 @@ export class DesktopChatService {
 
     let groundPack = this.#groundPacks.get(record.id) ?? null;
     if (ground && groundPack === null) {
-      groundPack = await this.#buildGrounding(root, input.content);
+      groundPack = await this.#buildGrounding(root, promptContent);
       this.#groundPacks.set(record.id, groundPack);
     }
     const grounding = ground && groundPack ? groundPack : undefined;
@@ -249,7 +260,7 @@ export class DesktopChatService {
     const engine = this.#engineFor(root, record.id, this.#engines);
     const systemPrompt = grounding ? `${grounding}\n\n---\n\n${CHAT_ROLE_META[slug].systemPrompt}` : CHAT_ROLE_META[slug].systemPrompt;
     const context = renderHistory(compactHistory(persisted.messages.slice(0, -1), HISTORY_CHAR_BUDGET).kept);
-    const prompt = context ? `${context}\n\nUser: ${input.content}` : input.content;
+    const prompt = context ? `${context}\n\nUser: ${promptContent}` : promptContent;
 
     let buffer = "";
     let bufferedChars = 0;
@@ -305,7 +316,7 @@ export class DesktopChatService {
         },
       };
       void this.#runAgentTurn(
-        { cwd: root, engine, role: slug, message: input.content, history: persisted.messages.slice(0, -1), override, grounding, signal: controller.signal },
+        { cwd: root, engine, role: slug, message: promptContent, history: persisted.messages.slice(0, -1), override, grounding, signal: controller.signal },
         hooks,
       ).then((result) => finalize(result.output, result.receipt)).catch(fail).finally(cleanup);
       return;

@@ -103,8 +103,8 @@ describe("ChatSurface", () => {
     expect(screen.queryByText("HiveBot")).not.toBeInTheDocument();
     expect(screen.queryByText(/specialized personas/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/7 specialists/i)).not.toBeInTheDocument();
-    expect(screen.getByTestId("chat-empty-state")).toHaveTextContent(/what's on the agenda/i);
-    expect(screen.getByText(/enter sends/i)).toBeInTheDocument();
+    expect(screen.getByTestId("chat-empty-state")).toHaveTextContent(/ask hive about this workspace/i);
+    expect(screen.getByTestId("chat-empty-state")).toHaveTextContent(/enter sends/i);
     expect(screen.getByPlaceholderText(/message HIVE/i)).toBeInTheDocument();
   });
 
@@ -213,5 +213,111 @@ describe("ChatSurface", () => {
 
     render(<ChatSurface state={state} send={send} />);
     expect(screen.getByRole("alert")).toHaveTextContent(/model timed out/i);
+  });
+
+  it("sends on Enter and keeps Shift+Enter as a newline", () => {
+    const send = vi.fn().mockResolvedValue({ type: "request.completed", timestamp: new Date().toISOString(), requestId: "r1" });
+    const now = new Date().toISOString();
+    const state = initialDesktopState();
+    state.chat.active = {
+      id: "conv-1",
+      cwd: "C:\\HIVE",
+      role: "auto",
+      ground: false,
+      createdAt: now,
+      updatedAt: now,
+      messages: [{ id: "m1", role: "user", content: "Hello", at: now }],
+    };
+    state.chat.activeId = "conv-1";
+
+    render(<ChatSurface state={state} send={send} />);
+    const textarea = screen.getByRole("textbox", { name: /message hive/i });
+    fireEvent.change(textarea, { target: { value: "Line one" } });
+    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: true });
+    expect(send).not.toHaveBeenCalled();
+
+    fireEvent.change(textarea, { target: { value: "Send this" } });
+    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({
+      type: "chat.send",
+      input: expect.objectContaining({ conversationId: "conv-1", content: "Send this" }),
+    }));
+  });
+
+  it("shows Stop while a reply is streaming and cancels that turn", () => {
+    const send = vi.fn().mockResolvedValue({ type: "request.completed", timestamp: new Date().toISOString(), requestId: "r1" });
+    const now = new Date().toISOString();
+    const state = initialDesktopState();
+    state.chat.active = {
+      id: "conv-1",
+      cwd: "C:\\HIVE",
+      role: "auto",
+      ground: false,
+      createdAt: now,
+      updatedAt: now,
+      messages: [{ id: "m1", role: "user", content: "Hello", at: now }],
+    };
+    state.chat.activeId = "conv-1";
+    state.chat.streaming = { "conv-1": { turnId: "turn-1", text: "Partial reply", tools: [] } };
+
+    render(<ChatSurface state={state} send={send} />);
+    expect(screen.queryByRole("button", { name: /send message/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /stop generation/i }));
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ type: "chat.cancel", conversationId: "conv-1" }));
+    expect(screen.getByText(/partial reply/i)).toBeInTheDocument();
+  });
+
+  it("offers Copy and Regenerate on the last assistant message", () => {
+    const send = vi.fn().mockResolvedValue({ type: "request.completed", timestamp: new Date().toISOString(), requestId: "r1" });
+    const now = new Date().toISOString();
+    const state = initialDesktopState();
+    state.chat.active = {
+      id: "conv-1",
+      cwd: "C:\\HIVE",
+      role: "auto",
+      ground: false,
+      createdAt: now,
+      updatedAt: now,
+      messages: [
+        { id: "m1", role: "user", content: "First question", at: now },
+        { id: "m2", role: "assistant", content: "First answer", at: now },
+        { id: "m3", role: "user", content: "Second question", at: now },
+        { id: "m4", role: "assistant", content: "Second answer", at: now },
+      ],
+    };
+
+    render(<ChatSurface state={state} send={send} />);
+    expect(screen.getAllByRole("button", { name: "Copy" })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Regenerate" }));
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({
+      type: "chat.send",
+      input: expect.objectContaining({ conversationId: "conv-1", content: "Second question", regenerate: true }),
+    }));
+  });
+
+  it("lists only configured models in the picker", () => {
+    const send = vi.fn().mockResolvedValue({ type: "request.completed", timestamp: new Date().toISOString(), requestId: "r1" });
+    const onSelectModel = vi.fn();
+    const state = initialDesktopState();
+
+    render(
+      <ChatSurface
+        state={state}
+        send={send}
+        activeModelName="No model"
+        modelOptions={[
+          { providerId: "ollama", providerName: "Ollama", model: "qwen2.5-coder" },
+          { providerId: "deepseek", providerName: "DeepSeek", model: "deepseek-v4-flash" },
+        ]}
+        onSelectModel={onSelectModel}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /select model/i }));
+    expect(screen.getByRole("option", { name: "qwen2.5-coder" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "deepseek-v4-flash" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /hive auto/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("option", { name: "deepseek-v4-flash" }));
+    expect(onSelectModel).toHaveBeenCalledWith({ providerId: "deepseek", providerName: "DeepSeek", model: "deepseek-v4-flash" });
   });
 });

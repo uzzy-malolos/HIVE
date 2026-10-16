@@ -57,10 +57,10 @@ export class ProviderRegistry {
     return true;
   }
 
-  async test(id: string): Promise<ProviderHealthResult> {
+  async test(id: string, signal?: AbortSignal): Promise<ProviderHealthResult> {
     const provider = await this.get(id);
     if (!provider) throw new Error(`Provider ${id} not found.`);
-    return runHealthCheck(provider);
+    return runHealthCheck(provider, signal);
   }
 
   async approve(id: string): Promise<void> {

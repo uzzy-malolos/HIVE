@@ -4,6 +4,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { CodingSessionRecord, FileChangeRecord } from "../coding/types.js";
 import { CodingSessionStore } from "../coding/session-store.js";
+import { withCodingSessionLeaseAtRoot } from "../coding/session-lease.js";
 import { WorktreeManager, branchNameForTask } from "../worktree.js";
 import { containsKnownSecret } from "../security/secrets.js";
 import type {
@@ -226,15 +227,18 @@ export class DefaultGuardedGitService implements GuardedGitService {
   }
 
   public async confirmCommit(input: GuardedGitCommitConfirmationInput): Promise<GuardedGitResult> {
-    const record = await this.#consume(input.confirmationToken, input.proposal, "commit");
-    const proposal = record.proposal as GuardedGitCommitPreviewInput;
-    await this.#validateCommitSession(proposal);
-    await this.#worktreeManagerFactory(proposal.repositoryRoot).commitWorktree(
-      proposal.codingSessionId,
-      proposal.message,
-      proposal.paths,
-    );
-    return { head: await this.#head(record.worktreePath), summary: `Committed ${proposal.paths.length} reviewed file(s).` };
+    const canonical = await this.#validateProposal(input.proposal);
+    return withCodingSessionLeaseAtRoot(canonical.repositoryRoot, canonical.codingSessionId, async () => {
+      const record = await this.#consume(input.confirmationToken, input.proposal, "commit");
+      const proposal = record.proposal as GuardedGitCommitPreviewInput;
+      await this.#validateCommitSession(proposal);
+      await this.#worktreeManagerFactory(proposal.repositoryRoot).commitWorktree(
+        proposal.codingSessionId,
+        proposal.message,
+        proposal.paths,
+      );
+      return { head: await this.#head(record.worktreePath), summary: `Committed ${proposal.paths.length} reviewed file(s).` };
+    });
   }
 
   public async confirmPush(input: GuardedGitPushConfirmationInput): Promise<GuardedGitResult> {
@@ -261,16 +265,23 @@ export class DefaultGuardedGitService implements GuardedGitService {
   }
 
   public async confirmDiscard(input: GuardedGitDiscardConfirmationInput): Promise<void> {
-    const record = await this.#consume(input.confirmationToken, input.proposal, "discard");
-    await this.#worktreeManagerFactory(record.proposal.repositoryRoot).discardWorktree(record.proposal.codingSessionId);
-    const marker = await fs.lstat(path.join(record.worktreePath, ".git")).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return null;
-      throw error;
+    const canonical = await this.#validateProposal(input.proposal);
+    await withCodingSessionLeaseAtRoot(canonical.repositoryRoot, canonical.codingSessionId, async () => {
+      const record = await this.#consume(input.confirmationToken, input.proposal, "discard");
+      const session = await this.#sessionStoreFactory(canonical.repositoryRoot).load(canonical.codingSessionId);
+      if (!session || !["completed", "failed", "cancelled"].includes(session.status)) {
+        throw new Error("Only settled coding sessions may discard their worktree; finish or interrupt the active run first.");
+      }
+      await this.#worktreeManagerFactory(record.proposal.repositoryRoot).discardWorktree(record.proposal.codingSessionId);
+      const marker = await fs.lstat(path.join(record.worktreePath, ".git")).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      if (marker) throw new Error("Discard failed: the derived HIVE worktree .git marker still exists.");
+      if (await this.#branchExists(record.proposal.repositoryRoot, record.branch)) {
+        throw new Error("Discard failed: the derived HIVE branch still exists.");
+      }
     });
-    if (marker) throw new Error("Discard failed: the derived HIVE worktree .git marker still exists.");
-    if (await this.#branchExists(record.proposal.repositoryRoot, record.branch)) {
-      throw new Error("Discard failed: the derived HIVE branch still exists.");
-    }
   }
 
   async #consume(

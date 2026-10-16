@@ -18,8 +18,8 @@ export class OpenRouterAdapter extends OpenAiCompatibleAdapter {
     };
   }
 
-  async healthCheck(config: ProviderConfig, credential?: ProviderRequestCredential): Promise<ProviderHealthResult> {
+  async healthCheck(config: ProviderConfig, credential?: ProviderRequestCredential, signal?: AbortSignal): Promise<ProviderHealthResult> {
     // OpenRouter requires auth context for models if restricted, but standard /models works
-    return super.healthCheck({ ...config, baseUrl: config.baseUrl || "https://openrouter.ai/api/v1" }, credential);
+    return super.healthCheck({ ...config, baseUrl: config.baseUrl || "https://openrouter.ai/api/v1" }, credential, signal);
   }
 }

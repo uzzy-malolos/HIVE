@@ -67,7 +67,7 @@ test("TUI command projects every structured runtime event without parsing transc
   projected = result.state;
   await result.runtime.completion;
 
-  assert.equal(updates.length, 3);
+  assert.equal(updates.length, 4); // Three event projections and one settled conversation snapshot.
   assert.equal(projected.subagents[0].status, "working");
   assert.equal(projected.recentRuntimeEvents.length, 3);
   assert.equal(projected.taskStatus, "complete");
@@ -103,11 +103,12 @@ test("runTuiTask propagates cancellation through the injected runner signal", as
   assert.equal(reportedError, "test cancellation");
 });
 
-test("Ctrl+C cancels the active runtime before terminal cleanup", async () => {
+test("Ctrl+C cancels the active runtime once and a second Ctrl+C exits", async () => {
   const { TuiApp } = await import("../dist/tui/app.js");
   const app = new TuiApp(process.cwd());
   const order = [];
   app.state.taskStatus = "running";
+  app.turnLive = true;
   app.activeRuntime = {
     controller: new AbortController(),
     completion: Promise.resolve(),
@@ -115,17 +116,22 @@ test("Ctrl+C cancels the active runtime before terminal cleanup", async () => {
   };
   const originalWrite = process.stdout.write;
   const originalPause = process.stdin.pause;
-  process.stdout.write = function () { order.push("cleanup"); return true; };
+  process.stdout.write = function (chunk) {
+    order.push(String(chunk).includes("\x1b[?1049l") ? "cleanup" : "frame");
+    return true;
+  };
   process.stdin.pause = function () { return process.stdin; };
   try {
     app.handleChar("\x03");
+    assert.equal(order[0], "cancel");
+    assert.equal(app.stopped, false);
+    app.handleChar("\x03");
+    assert.equal(app.stopped, true);
+    assert.ok(order.indexOf("cancel") < order.indexOf("cleanup"));
   } finally {
     process.stdout.write = originalWrite;
     process.stdin.pause = originalPause;
   }
-
-  assert.equal(order[0], "cancel");
-  assert.equal(app.stopped, true);
 });
 
 test("/agents toggles, selects, collapses, and reports unknown ids", async () => {

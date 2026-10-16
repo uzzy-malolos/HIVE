@@ -37,10 +37,10 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-weight: 600;
-  font-size: 14px;
-  letter-spacing: 0.04em;
-  color: var(--hive-text);
+  font-weight: 650;
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  color: #ffffff;
   padding-right: 12px;
   border-right: 1px solid var(--hive-border-subtle);
 }
@@ -77,6 +77,7 @@
   align-items: center;
   gap: 3px;
   flex: 1;
+  min-width: 0;
   overflow-x: auto;
   padding: 0 4px;
 }
@@ -95,6 +96,8 @@
   transition: background 0.12s ease, color 0.12s ease;
   white-space: nowrap;
   max-width: 200px;
+  min-width: 0;
+  flex: 0 0 auto;
 }
 
 .hive-tab:hover {
@@ -103,12 +106,35 @@
 }
 
 .hive-tab.is-active {
-  background: var(--hive-bg-raised);
+  background: var(--hive-bg-hover);
   color: #ffffff;
-  font-weight: 500;
-  border-color: var(--hive-border-default);
-  border-bottom: 2px solid var(--hive-violet-soft);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  font-weight: 600;
+  border-color: transparent;
+}
+
+.hive-shell .hive-tab > button.hive-tab {
+  height: auto;
+  min-height: 0;
+  max-width: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  border-radius: 0;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  justify-content: flex-start;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.hive-shell .hive-tab > button.hive-tab:hover,
+.hive-shell .hive-tab.is-active > button.hive-tab {
+  background: transparent;
+  box-shadow: none;
+  color: inherit;
+  border: 0;
 }
 
 .hive-tab-label {
@@ -128,6 +154,7 @@
   line-height: 1;
   opacity: 0.6;
   margin-left: 2px;
+  flex: none;
 }
 
 .hive-tab-close:hover {
@@ -158,6 +185,7 @@
   align-items: center;
   gap: 8px;
   margin-left: auto;
+  flex: none;
 }
 
 .hive-titlebar-chip {
@@ -181,17 +209,10 @@
 
 .hive-status-dot.is-running {
   background: var(--hive-violet-soft);
-  box-shadow: 0 0 6px var(--hive-violet-soft);
-  animation: hive-pulse 1.8s infinite;
 }
 
 .hive-status-dot.is-verified {
   background: var(--hive-success);
-}
-
-@keyframes hive-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
 }
 
 .hive-titlebar-btn {
@@ -199,12 +220,25 @@
   align-items: center;
   gap: 6px;
   height: 28px;
+  max-width: 240px;
+  min-width: 0;
   padding: 0 8px;
   border-radius: var(--hive-radius-sm);
   background: var(--hive-bg-raised);
   border: 1px solid var(--hive-border-subtle);
   color: var(--hive-text-secondary);
   font-size: 12px;
+}
+
+.hive-titlebar-model {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--hive-font-mono);
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .hive-titlebar-btn:hover {
@@ -245,8 +279,9 @@
   padding: 0 12px;
   background: var(--hive-bg-deep);
   border-top: 1px solid var(--hive-border-subtle);
-  font-family: var(--hive-font-mono);
-  font-size: 11px;
+  font-family: var(--hive-font-ui);
+  font-size: 12px;
+  letter-spacing: 0.01em;
   color: var(--hive-text-dim);
   user-select: none;
   z-index: 10;

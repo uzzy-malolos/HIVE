@@ -29,6 +29,7 @@ const runtimeEventTypes: Record<RuntimeEventType, true> = {
   "subagent.started": true,
   "subagent.progress": true,
   "subagent.tool_call": true,
+  "subagent.tool_result": true,
   "subagent.file_changed": true,
   "subagent.blocked": true,
   "subagent.retrying": true,

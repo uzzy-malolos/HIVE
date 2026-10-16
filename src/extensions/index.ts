@@ -1,0 +1,13 @@
+export { discoverExtensions, loadSkill, loadPluginAgent, loadLspServer, loadTrustedPluginOutputStyle, setExtensionState, installLocalPlugin, uninstallLocalPlugin } from "./catalog.js";
+export { connectLsp, type LspConnection, type LspServerDescriptor } from "./lsp.js";
+export { runPluginAgent, type PluginAgentDescriptor } from "./plugin-agents.js";
+export { createMcpClientHost, type McpUserInput, type McpUserInputRequest, type McpUserInputResult } from "./mcp-client-host.js";
+export { connectMcp } from "./mcp.js";
+export { runHooks } from "./hooks.js";
+export type { ClaudeHookHost, ClaudeHookEvaluation, ClaudeHookEvaluationRequest } from "./claude-hooks.js";
+export { readSkillReference } from "./skill-files.js";
+export type { SkillReferenceOptions } from "./skill-files.js";
+export { extensionCommand, type ExtensionCommandKind } from "./commands.js";
+export { beginMcpOAuthLogin, getMcpOAuthStatus, logoutMcpOAuth } from "./oauth.js";
+export { marketplaceCommand, installMarketplacePlugin, listMarketplaces, listMarketplacePlugins } from "./marketplace.js";
+export type * from "./types.js";

@@ -256,6 +256,27 @@ test("send with agent:true emits tool events then a completed message with recei
   }
 });
 
+test("regenerate reruns the last user turn without appending another user message", async () => {
+  const { root, events, requests, service } = await fixture();
+  try {
+    const conversation = await service.create({});
+    await service.send({ conversationId: conversation.id, content: "Plan the migration" });
+    await until(() => events.some((event) => event.type === "chat.completed"), "first completed");
+    events.length = 0;
+    await service.send({ conversationId: conversation.id, content: "ignored", regenerate: true });
+    await until(() => events.some((event) => event.type === "chat.completed"), "regenerated");
+    assert.equal(requests.at(-1).prompt, "Plan the migration");
+    const loaded = await service.load(conversation.id);
+    assert.equal(loaded.messages.filter((message) => message.role === "user").length, 1);
+    assert.equal(loaded.messages[0].content, "Plan the migration");
+    assert.equal(loaded.messages.filter((message) => message.role === "assistant").length, 1);
+    const changed = events.find((event) => event.type === "chat.changed");
+    assert.equal(changed.conversation.messages.length, 1);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("agent tool labels are clamped to the contract cap so long paths do not fail the turn", async () => {
   const longPath = `src/${"a".repeat(500)}.ts`;
   const { root, events, service } = await fixture({}, {

@@ -7,6 +7,7 @@ import { AnthropicAdapter } from './adapters/anthropic.js';
 import { GoogleAdapter } from './adapters/google.js';
 import { OAuthPlaceholderAdapter } from './adapters/oauth-placeholder.js';
 import { CustomAdapter, LocalAdapter } from './adapters/local.js';
+import { ChatGptSubscriptionAdapter } from './adapters/chatgpt-subscription.js';
 
 export function getAdapterForKind(kind: ProviderKind): ProviderAdapter {
   switch (kind) {
@@ -17,13 +18,14 @@ export function getAdapterForKind(kind: ProviderKind): ProviderAdapter {
     case "anthropic": return new AnthropicAdapter();
     case "google": return new GoogleAdapter();
     case "oauth": return new OAuthPlaceholderAdapter();
+    case "chatgpt-subscription": return new ChatGptSubscriptionAdapter();
     case "custom": return new CustomAdapter();
     case "local": return new LocalAdapter();
     default: throw new Error(`Unknown provider kind: ${kind}`);
   }
 }
 
-export async function runHealthCheck(config: ProviderConfig): Promise<ProviderHealthResult> {
+export async function runHealthCheck(config: ProviderConfig, signal?: AbortSignal): Promise<ProviderHealthResult> {
   const adapter = getAdapterForKind(config.kind);
-  return adapter.healthCheck(config);
+  return adapter.healthCheck(config, undefined, signal);
 }

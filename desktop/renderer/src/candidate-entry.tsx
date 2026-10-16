@@ -1,6 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import type { RuntimeEvent } from "../../../src/coding/types";
 import type { DesktopCommand, DesktopEvent, ThreadRecordV1 } from "../../../src/desktop/types";
 import type { HiveDesktopBridge } from "./bridge";
 
@@ -96,6 +97,20 @@ function createMockBridge(targetScenario: string): ExtendedBridge {
     ],
   };
 
+  const themeChat = {
+    id: "conv-2",
+    cwd: "C:\\HIVE",
+    role: "coding",
+    ground: false,
+    createdAt: "2026-01-02T00:00:00.000Z",
+    updatedAt: "2026-01-02T00:00:00.000Z",
+    messages: [
+      { id: "t-1", role: "user" as const, content: "Where do the desktop color tokens live?", at: "2026-01-02T00:00:00.000Z" },
+      { id: "t-2", role: "assistant" as const, content: "They live in the desktop token stylesheet. Nothing here is a sample transcript from another product.", at: "2026-01-02T00:00:00.000Z" },
+    ],
+  };
+  let candidateStreamToken = 0;
+
   const bridge: ExtendedBridge = {
     async request(command: DesktopCommand): Promise<DesktopEvent> {
       switch (command.type) {
@@ -107,11 +122,70 @@ function createMockBridge(targetScenario: string): ExtendedBridge {
             timestamp: now,
             conversations: isChatEmpty ? [] : [
               { id: "conv-1", title: "Session Tabs & Provider Router", updatedAt: now, role: "planning", messageCount: 2 },
-              { id: "conv-2", title: "Desktop Theme Tokens", updatedAt: now, role: "coding", messageCount: 4 },
+              { id: "conv-2", title: "Desktop Theme Tokens", updatedAt: "2026-01-02T00:00:00.000Z", role: "coding", messageCount: 2 },
             ],
           };
-        case "chat.load":
-          return activeChat ? { type: "chat.changed", timestamp: now, conversation: activeChat } : { type: "chat.listed", timestamp: now, conversations: [] };
+        case "chat.load": {
+          const loaded = command.conversationId === "conv-2" ? themeChat : activeChat;
+          return loaded ? { type: "chat.changed", timestamp: now, conversation: loaded } : { type: "chat.listed", timestamp: now, conversations: [] };
+        }
+        case "chat.create": {
+          const created = {
+            id: `conv-${Date.now()}`,
+            cwd: "C:\\HIVE",
+            role: "auto",
+            ground: false,
+            createdAt: now,
+            updatedAt: new Date().toISOString(),
+            messages: [],
+          };
+          return { type: "chat.changed", timestamp: now, conversation: created };
+        }
+        case "chat.send": {
+          const token = ++candidateStreamToken;
+          const conversationId = command.input.conversationId;
+          const turnId = `turn-candidate-${token}`;
+          const base = conversationId === "conv-2" ? themeChat : activeChat;
+          const prior = base && base.id === conversationId ? base.messages : [];
+          const history = command.input.regenerate
+            ? prior.filter((message, index, all) => !(message.role === "assistant" && index === all.length - 1))
+            : [...prior, { id: `user-${token}`, role: "user" as const, content: command.input.content, at: now }];
+          const draft = {
+            id: conversationId,
+            cwd: "C:\\HIVE",
+            role: "auto",
+            ground: false,
+            createdAt: now,
+            updatedAt: now,
+            messages: history,
+          };
+          window.setTimeout(() => {
+            bridge.emit({ type: "chat.changed", timestamp: now, conversation: draft });
+            bridge.emit({ type: "chat.started", timestamp: now, conversationId, turnId });
+            bridge.emit({ type: "chat.chunk", timestamp: now, conversationId, turnId, chunk: "Streaming a HIVE reply.", seq: 0 });
+          }, 40);
+          window.setTimeout(() => {
+            if (token !== candidateStreamToken) return;
+            const message = { id: `asst-${token}`, role: "assistant" as const, content: "Streaming a HIVE reply.", at: now };
+            bridge.emit({ type: "chat.changed", timestamp: now, conversation: { ...draft, messages: [...history, message] } });
+            bridge.emit({ type: "chat.completed", timestamp: now, conversationId, turnId, message });
+          }, 4000);
+          return { type: "request.completed", timestamp: now, requestId: command.requestId };
+        }
+        case "chat.cancel": {
+          candidateStreamToken += 1;
+          window.setTimeout(() => {
+            bridge.emit({
+              type: "chat.failed",
+              timestamp: now,
+              conversationId: command.conversationId,
+              turnId: "turn-candidate-cancel",
+              message: "Cancelled.",
+              recoverable: true,
+            });
+          }, 20);
+          return { type: "request.completed", timestamp: now, requestId: command.requestId };
+        }
         case "provider.list":
           return { type: "provider.listed", timestamp: now, providers: providersList };
         case "models.list":
@@ -251,6 +325,16 @@ if (root) {
 
   setTimeout(() => {
     mockBridge.emit({ type: "desktop.ready", timestamp: now, repositoryRoot: "C:\\HIVE" });
+    if (scenario.startsWith("chat") && scenario !== "chat-empty") {
+      mockBridge.emit({
+        type: "chat.listed",
+        timestamp: now,
+        conversations: [
+          { id: "conv-1", title: "Session Tabs & Provider Router", updatedAt: now, role: "planning", messageCount: 2 },
+          { id: "conv-2", title: "Desktop Theme Tokens", updatedAt: "2026-01-02T00:00:00.000Z", role: "coding", messageCount: 2 },
+        ],
+      });
+    }
     if (scenario === "chat-active") {
       mockBridge.emit({
         type: "chat.changed",
@@ -295,6 +379,7 @@ if (root) {
 
     if (isCoderMode) {
       mockBridge.emit({ type: "thread.changed", timestamp: now, thread: threadActive });
+      emitCandidateActivity(mockBridge, now);
       mockBridge.emit({
         type: "git.changed",
         timestamp: now,
@@ -413,4 +498,40 @@ diff --git a/desktop/renderer/src/styles/tokens.css b/desktop/renderer/src/style
       }
     }
   }, 100);
+}
+
+function emitCandidateActivity(bridge: { emit: (event: DesktopEvent) => void }, now: string): void {
+  const base = Date.parse(now);
+  const samples: Array<{ sequence: number; type: string; payload: object; offsetSec: number }> = [
+    { sequence: 1, offsetSec: 40, type: "subagent.created", payload: { subagentId: "bee-scout", task: { id: "bee-scout", role: "scout" } } },
+    { sequence: 2, offsetSec: 36, type: "subagent.completed", payload: { subagentId: "bee-scout", summary: "Captured repository context" } },
+    { sequence: 3, offsetSec: 30, type: "plan.created", payload: { summary: "Wire session tabs into the titlebar", taskIds: ["bee-builder"] } },
+    { sequence: 4, offsetSec: 28, type: "subagent.created", payload: { subagentId: "bee-builder", task: { id: "bee-builder", role: "builder" } } },
+    { sequence: 5, offsetSec: 20, type: "subagent.file_changed", payload: { subagentId: "bee-builder", path: "desktop/renderer/src/shell/WorkspaceTabs.tsx", operation: "modified" } },
+    { sequence: 6, offsetSec: 12, type: "subagent.completed", payload: { subagentId: "bee-builder", summary: "Updated session tabs" } },
+    {
+      sequence: 7,
+      offsetSec: 8,
+      type: "validation.completed",
+      payload: { result: { id: "val-1", command: "npm test", status: "passed", startedAt: now } },
+    },
+    {
+      sequence: 8,
+      offsetSec: 2,
+      type: "review.completed",
+      payload: { result: { id: "rev-1", status: "passed", summary: "No blocking findings", findings: [], completedAt: now } },
+    },
+  ];
+  for (const sample of samples) {
+    const event = {
+      schemaVersion: 1 as const,
+      id: `cand-runtime-${sample.sequence}`,
+      sequence: sample.sequence,
+      sessionId: "session-active-1",
+      timestamp: new Date(base - sample.offsetSec * 1000).toISOString(),
+      type: sample.type,
+      payload: sample.payload,
+    } as RuntimeEvent;
+    bridge.emit({ type: "runtime.event", timestamp: now, event });
+  }
 }

@@ -21,6 +21,7 @@ import { usePrefs } from "./prefs";
 import { initialDesktopState, latestRun, reduceDesktopEvent, type CenterTab, type DesktopMode } from "./state";
 import { identifier, terminalStatuses } from "./utils";
 import "./styles.css";
+import "./styles/motion.css";
 
 export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
   const api = suppliedApi ?? installedBridge();
@@ -33,7 +34,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
   const [retryMessageId, setRetryMessageId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [newThreadTitle, setNewThreadTitle] = useState("New HIVE task");
-  const [activeModelName, setActiveModelName] = useState("HIVE Auto");
+  const [modelChoice, setModelChoice] = useState<{ providerId: string; model: string } | null>(null);
 
   const [providerDialog, setProviderDialog] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -62,6 +63,8 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
   const repositoryRef = useRef<string | null>(null);
   const openEpochRef = useRef(0);
   const chatRequestIds = useRef(new Set<string>());
+  const modelsRequested = useRef(new Set<string>());
+  const startNewChatRef = useRef<() => void>(() => {});
 
   const splitRatio = prefs.splitRatio ?? 0.4;
 
@@ -163,19 +166,68 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
   // --- Shell-derived navigation/tabs -------------------------------------------------
   const openSettingsModels = () => { setSettingsTab("models"); setSettingsOpen(true); };
 
+  const modelOptions = useMemo(() => {
+    const options: { providerId: string; providerName: string; model: string }[] = [];
+    for (const provider of state.providers) {
+      if (!provider.configured) continue;
+      const listed = state.modelsByProvider[provider.id] ?? [];
+      if (listed.length > 0) {
+        for (const model of listed) options.push({ providerId: provider.id, providerName: provider.name, model: model.id });
+      } else if (provider.defaultModel) {
+        options.push({ providerId: provider.id, providerName: provider.name, model: provider.defaultModel });
+      }
+    }
+    return options;
+  }, [state.providers, state.modelsByProvider]);
+
+  const activeModelName = modelChoice
+    ? `${state.providers.find((provider) => provider.id === modelChoice.providerId)?.name ?? modelChoice.providerId} / ${modelChoice.model}`
+    : "No model";
+
+  useEffect(() => {
+    for (const provider of state.providers) {
+      if (!provider.configured || modelsRequested.current.has(provider.id)) continue;
+      modelsRequested.current.add(provider.id);
+      void fetchModels(provider.id);
+    }
+  }, [state.providers]);
+
+  useEffect(() => {
+    setModelChoice((current) => {
+      if (current && modelOptions.some((option) => option.providerId === current.providerId && option.model === current.model)) return current;
+      const first = modelOptions[0];
+      return first ? { providerId: first.providerId, model: first.model } : null;
+    });
+  }, [modelOptions]);
+
   const recentSessions: SidebarSession[] = useMemo(() => {
-    const list: SidebarSession[] = [];
-    for (const conv of state.chat.conversations) {
-      if (conv.archived) continue;
-      list.push({ id: `chat-${conv.id}`, title: conv.title || "Conversation", kind: "chat", active: conv.id === state.chat.activeId });
+    if (state.mode === "coder") {
+      return state.threads
+        .filter((thread) => !thread.archived)
+        .slice()
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+        .map((thread) => {
+          const live = [...thread.runs].reverse().find((run) => !terminalStatuses.has(run.status));
+          return {
+            id: `thread-${thread.id}`,
+            title: thread.title,
+            kind: "coder" as const,
+            active: thread.id === state.activeThreadId,
+            ...(live ? { status: live.status } : {}),
+          };
+        });
     }
-    for (const thread of state.threads) {
-      if (thread.archived) continue;
-      list.push({ id: `thread-${thread.id}`, title: thread.title, kind: "coder", active: thread.id === state.activeThreadId });
-    }
-    list.sort((a, b) => (a.active === b.active ? b.title.localeCompare(a.title) : (a.active ? -1 : 1)));
-    return list.slice(0, 8);
-  }, [state.chat.conversations, state.chat.activeId, state.threads, state.activeThreadId]);
+    return state.chat.conversations
+      .filter((conversation) => !conversation.archived)
+      .slice()
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .map((conversation) => ({
+        id: `chat-${conversation.id}`,
+        title: conversation.title || "New chat",
+        kind: "chat" as const,
+        active: conversation.id === state.chat.activeId,
+      }));
+  }, [state.mode, state.chat.conversations, state.chat.activeId, state.threads, state.activeThreadId]);
 
   const sessionTabs: WorkspaceTab[] = recentSessions.slice(0, 4).map((s) => ({ id: s.id, label: s.title, kind: s.kind }));
   const activeTabId = state.mode === "chat"
@@ -196,8 +248,10 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
 
   const handleNewTask = async (): Promise<void> => {
     dispatch({ type: "ui.mode", mode: "chat" });
+    updatePrefs({ mode: "chat" });
     await send({ type: "chat.create", input: {} });
   };
+  startNewChatRef.current = () => { void handleNewTask(); };
 
   const shellStatus = [
     state.repositoryRoot
@@ -468,7 +522,21 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
         return;
       }
 
-      const isInput = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement;
+      const meta = event.ctrlKey || event.metaKey;
+      const typing = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement || (event.target instanceof HTMLElement && event.target.isContentEditable);
+      const inChatComposer = event.target instanceof HTMLElement && event.target.closest(".hive-chat-surface") !== null;
+      if (!modalOpen && meta && event.shiftKey && !event.altKey && event.key.toLowerCase() === "o") {
+        event.preventDefault();
+        startNewChatRef.current();
+        return;
+      }
+      if (!modalOpen && meta && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "n" && (!typing || inChatComposer)) {
+        event.preventDefault();
+        startNewChatRef.current();
+        return;
+      }
+
+      const isInput = typing;
 
       if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
         event.preventDefault();
@@ -530,6 +598,9 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
             state={state}
             send={send}
             activeModelName={activeModelName}
+            modelOptions={modelOptions}
+            selectedModel={modelChoice}
+            onSelectModel={(choice) => setModelChoice({ providerId: choice.providerId, model: choice.model })}
             onOpenModelPicker={() => { setSettingsTab("catalog"); setSettingsOpen(true); }}
             onOpenSettings={() => dispatch({ type: "ui.mode", mode: "settings" })}
             onHandoffToCoder={() => dispatch({ type: "ui.mode", mode: "coder" })}
@@ -539,6 +610,9 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
             state={state}
             send={send}
             activeModelName={activeModelName}
+            modelOptions={modelOptions}
+            selectedModel={modelChoice}
+            onSelectModel={(choice) => setModelChoice({ providerId: choice.providerId, model: choice.model })}
             onOpenModelPicker={() => { setSettingsTab("catalog"); setSettingsOpen(true); }}
             onOpenSettings={() => dispatch({ type: "ui.mode", mode: "settings" })}
             onOpenRepositoryPicker={async () => {

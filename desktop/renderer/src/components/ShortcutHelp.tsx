@@ -6,8 +6,12 @@ export interface ShortcutHelpProps {
 
 export function ShortcutHelp({ onClose }: ShortcutHelpProps) {
   const shortcuts = [
+    { key: "Ctrl + Shift + O", desc: "New chat" },
+    { key: "Ctrl + N", desc: "New chat, including from the chat composer" },
+    { key: "Enter", desc: "Send the chat message" },
+    { key: "Shift + Enter", desc: "Add a line in the chat composer" },
     { key: "Ctrl + K", desc: "Open command palette" },
-    { key: "Ctrl + Enter", desc: "Submit composer message" },
+    { key: "Ctrl + Enter", desc: "Submit a Hive Code run" },
     { key: "Ctrl + 1", desc: "Switch to Conversation tab" },
     { key: "Ctrl + 2", desc: "Switch to Changes tab" },
     { key: "Ctrl + 3", desc: "Switch to Report tab" },

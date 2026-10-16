@@ -1,8 +1,27 @@
 import { ProviderAdapter, ProviderConfig, ProviderHealthResult, ProviderCompletionInput, ProviderCompletionResult, ProviderKind, ProviderRequestCredential } from '../types.js';
 import { readSseStream } from '../streaming.js';
+import { validateProviderImages } from '../images.js';
+import { outputTokenLimit } from '../limits.js';
+import { providerModelsEndpoint } from '../models.js';
+
+function userContent(input: ProviderCompletionInput) {
+  const images = validateProviderImages(input.images);
+  if (!images.length) return input.prompt;
+  return [
+    { type: "text", text: input.prompt },
+    ...images.map((image) => ({ type: "image_url", image_url: { url: `data:${image.mimeType};base64,${image.data}` } })),
+  ];
+}
 
 export class OpenAiCompatibleAdapter implements ProviderAdapter {
   kind: ProviderKind = "openai-compatible";
+
+  protected getBaseUrl(config: ProviderConfig): string {
+    if (config.baseUrl) return config.baseUrl.replace(/\/+$/, "");
+    if (config.kind === "openrouter") return "https://openrouter.ai/api/v1";
+    if (config.kind === "openai") return "https://api.openai.com/v1";
+    throw new Error(`Provider ${config.id} requires an explicit baseUrl; refusing to send data to a different provider.`);
+  }
 
   protected getHeaders(config: ProviderConfig, credential?: ProviderRequestCredential): Record<string, string> {
     const headers: Record<string, string> = {
@@ -23,15 +42,15 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     return headers;
   }
 
-  async healthCheck(config: ProviderConfig, credential?: ProviderRequestCredential): Promise<ProviderHealthResult> {
+  async healthCheck(config: ProviderConfig, credential?: ProviderRequestCredential, signal?: AbortSignal): Promise<ProviderHealthResult> {
     try {
-      const baseUrl = config.baseUrl || "https://api.openai.com/v1";
-      // To test health non-destructively, we list models instead of generating a response if possible,
-      // but standard openai endpoint is /models
+      // A public catalog proves reachability; authenticated generation is verified separately.
       const headers = this.getHeaders(config, credential);
       
-      const res = await fetch(`${baseUrl}/models`, {
+      const res = await fetch(providerModelsEndpoint(config), {
         method: "GET",
+        redirect: "error",
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
         headers
       });
 
@@ -51,6 +70,7 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
         message: "Health check passed."
       };
     } catch (err: any) {
+      signal?.throwIfAborted();
       return {
         ok: false,
         providerId: config.id,
@@ -61,20 +81,22 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
   }
 
   async complete(config: ProviderConfig, input: ProviderCompletionInput, credential?: ProviderRequestCredential): Promise<ProviderCompletionResult> {
-    const baseUrl = config.baseUrl || "https://api.openai.com/v1";
+    const baseUrl = this.getBaseUrl(config);
     const headers = this.getHeaders(config, credential);
 
     const messages = [];
     if (input.systemPrompt) {
       messages.push({ role: "system", content: input.systemPrompt });
     }
-    messages.push({ role: "user", content: input.prompt });
+    messages.push({ role: "user", content: userContent(input) });
 
     const res = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
+      signal: input.signal,
       headers,
       body: JSON.stringify({
         model: input.model || config.defaultModel,
+        ...(config.kind === "openai" ? { max_completion_tokens: outputTokenLimit(input.maxOutputTokens) } : { max_tokens: outputTokenLimit(input.maxOutputTokens) }),
         messages
       })
     });
@@ -95,20 +117,22 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
   }
 
   async streamComplete(config: ProviderConfig, input: ProviderCompletionInput, onChunk: (chunk: string) => void, credential?: ProviderRequestCredential): Promise<ProviderCompletionResult> {
-    const baseUrl = config.baseUrl || "https://api.openai.com/v1";
+    const baseUrl = this.getBaseUrl(config);
     const headers = this.getHeaders(config, credential);
 
     const messages = [];
     if (input.systemPrompt) {
       messages.push({ role: "system", content: input.systemPrompt });
     }
-    messages.push({ role: "user", content: input.prompt });
+    messages.push({ role: "user", content: userContent(input) });
 
     const res = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
+      signal: input.signal,
       headers,
       body: JSON.stringify({
         model: input.model || config.defaultModel,
+        ...(config.kind === "openai" ? { max_completion_tokens: outputTokenLimit(input.maxOutputTokens) } : { max_tokens: outputTokenLimit(input.maxOutputTokens) }),
         messages,
         stream: true,
         // OpenAI-family servers attach usage to the final chunk when asked;

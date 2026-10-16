@@ -226,7 +226,7 @@ describe("HIVE desktop cockpit", () => {
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /^codex$/i }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/corrupt and was preserved/i);
-    expect(screen.getByText(/No sessions yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/No active work/i)).toBeInTheDocument();
   });
 
   it("keeps the latest repository epoch when A resolves after B and rejects late A results", async () => {
@@ -331,9 +331,9 @@ describe("HIVE desktop cockpit", () => {
     render(<App api={api} />);
     const user = userEvent.setup();
 
-    // 1. Chat empty state with prompt starters
-    expect(screen.getByText(/Explain this project in plain language/i)).toBeInTheDocument();
-    expect(screen.getByText(/Help me plan a small, safe change/i)).toBeInTheDocument();
+    // 1. Quiet empty chat, ready to type
+    expect(screen.getByTestId("chat-empty-state")).toHaveTextContent(/ask hive about this workspace/i);
+    expect(screen.getByTestId("chat-empty-state")).toHaveTextContent(/enter sends/i);
 
     // 2. Command palette opening via Ctrl+K
     await user.keyboard("{Control>}k{/Control}");
@@ -376,8 +376,8 @@ describe("HIVE desktop cockpit", () => {
     const user = userEvent.setup();
     render(<App api={api} />);
 
-    // Welcome surface: suggestion click populates composer, then send submits
-    await user.click(screen.getByRole("button", { name: new RegExp(sentContent, "i") }));
+    const composer = screen.getByRole("textbox", { name: /message hive/i });
+    await user.type(composer, sentContent);
     await user.click(screen.getByRole("button", { name: /send message/i }));
     expect(api.request.mock.calls.some(([c]) => c.type === "chat.create" || c.type === "chat.send")).toBe(true);
   });
@@ -417,6 +417,69 @@ describe("HIVE desktop cockpit", () => {
     const handoffBtn = screen.getByRole("button", { name: /build in hive code/i });
     await user.click(handoffBtn);
     expect(screen.getByLabelText("Hive Code Surface")).toBeInTheDocument();
+  });
+
+  it("lists chats newest first, filters titles, loads the selected thread, and starts a chat with Ctrl+Shift+O", async () => {
+    localStorage.clear();
+    const older = "2026-01-01T00:00:00.000Z";
+    const newer = "2026-08-01T00:00:00.000Z";
+    const olderConversation = {
+      id: "chat-1789200000000-old1",
+      cwd: "C:\\HIVE",
+      role: "auto",
+      ground: false,
+      createdAt: older,
+      updatedAt: older,
+      messages: [
+        { id: "u-old", role: "user" as const, content: "Older question", at: older },
+        { id: "a-old", role: "assistant" as const, content: "Older answer", at: older },
+      ],
+    };
+    const api = bridge({
+      request: async (command) => {
+        if (command.type === "chat.list") {
+          return {
+            type: "chat.listed",
+            timestamp: now,
+            conversations: [
+              { id: olderConversation.id, title: "Older notes", role: "auto", updatedAt: older, messageCount: 2 },
+              { id: "chat-1789200000000-new1", title: "Newer plan", role: "auto", updatedAt: newer, messageCount: 1 },
+              { id: "chat-1789200000000-arch", title: "Archived secret", role: "auto", updatedAt: newer, messageCount: 1, archived: true },
+            ],
+          };
+        }
+        if (command.type === "chat.load") {
+          return { type: "chat.changed", timestamp: now, conversation: olderConversation };
+        }
+        if (command.type === "chat.create") {
+          return {
+            type: "chat.changed",
+            timestamp: now,
+            conversation: { id: "chat-1789200000000-new2", cwd: "C:\\HIVE", role: "auto", ground: false, createdAt: now, updatedAt: now, messages: [] },
+          };
+        }
+        return eventFor(command);
+      },
+    });
+    const user = userEvent.setup();
+    render(<App api={api} />);
+
+    const sidebar = screen.getByRole("navigation", { name: /global navigation/i });
+    const newerButton = await within(sidebar).findByRole("button", { name: "Newer plan" });
+    const olderButton = within(sidebar).getByRole("button", { name: "Older notes" });
+    expect(newerButton.compareDocumentPosition(olderButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Archived secret" })).not.toBeInTheDocument();
+
+    await user.type(within(sidebar).getByRole("searchbox", { name: /search chats/i }), "older");
+    expect(within(sidebar).queryByRole("button", { name: "Newer plan" })).not.toBeInTheDocument();
+    await user.click(within(sidebar).getByRole("button", { name: "Older notes" }));
+    expect(await screen.findByText("Older answer")).toBeInTheDocument();
+    expect(api.request.mock.calls.some(([command]) => command.type === "chat.load" && command.conversationId === olderConversation.id)).toBe(true);
+
+    await user.keyboard("{Control>}{Shift>}o{/Shift}{/Control}");
+    await waitFor(() => {
+      expect(api.request.mock.calls.some(([command]) => command.type === "chat.create")).toBe(true);
+    });
   });
 });
 

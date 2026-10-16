@@ -2,9 +2,10 @@ import React, { useState, useRef, useEffect } from "react";
 import type { DesktopViewState } from "../../state";
 import type { DesktopCommandInput } from "../../bridge";
 import type { DesktopEvent, ThreadMessage } from "../../../../../src/desktop/types";
-import { identifier } from "../../utils";
+import { identifier, preferredScrollBehavior } from "../../utils";
 import { renderMarkdown } from "../../markdown";
 import { InspectorTabs } from "../inspector/InspectorTabs";
+import { AgentActivity } from "./AgentActivity";
 
 export interface CodexSurfaceProps {
   state: DesktopViewState;
@@ -37,7 +38,7 @@ export function CodexSurface({
   hideInspector = false,
   defaultInspectorTab = "changes",
 }: CodexSurfaceProps) {
-  const { repositoryRoot, threads, activeThreadId, reports } = state;
+  const { repositoryRoot, threads, activeThreadId, reports, runtimeEvents, run, selectedSessionId } = state;
 
   const [composerMode, setComposerMode] = useState<CodexComposerMode>("agent");
   const [posture, setPosture] = useState<CodexApprovalPosture>("auto");
@@ -45,12 +46,14 @@ export function CodexSurface({
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
   const activeThread = threads.find((t) => t.id === activeThreadId);
-  const activeReport = activeThreadId ? reports[activeThreadId] : undefined;
+  const latestRun = activeThread?.runs[activeThread.runs.length - 1];
+  const codingSessionId = selectedSessionId ?? run?.codingSessionId ?? latestRun?.codingSessionId ?? null;
+  const activeReport = codingSessionId ? reports[codingSessionId] ?? null : null;
 
   useEffect(() => {
     try {
       if (transcriptEndRef.current && typeof transcriptEndRef.current.scrollIntoView === "function") {
-        transcriptEndRef.current.scrollIntoView({ behavior: "smooth" });
+        transcriptEndRef.current.scrollIntoView({ behavior: preferredScrollBehavior() });
       }
     } catch {
       // Ignore jsdom absence
@@ -136,38 +139,11 @@ export function CodexSurface({
         </div>
 
         <div className="hive-code-stream">
-          <div className="hive-activity-block">
-            <div className="hive-activity-row">
-              <span className="hive-activity-dot is-done">●</span>
-              <span className="hive-activity-name">Scout</span>
-              <span className="hive-activity-desc">indexed repository symbols & context</span>
-              <span className="hive-activity-meta">0.4s</span>
-            </div>
-            <div className="hive-activity-row">
-              <span className="hive-activity-dot is-done">●</span>
-              <span className="hive-activity-name">Planner</span>
-              <span className="hive-activity-desc">decomposed objective into verifiable steps</span>
-              <span className="hive-activity-meta">1.2s</span>
-            </div>
-            <div className="hive-activity-row">
-              <span className="hive-activity-dot is-running">◉</span>
-              <span className="hive-activity-name" style={{ color: "var(--hive-violet-soft)" }}>Builder</span>
-              <span className="hive-activity-desc">executing verified tool changes</span>
-              <span className="hive-activity-meta">active</span>
-            </div>
-            <div className="hive-activity-row">
-              <span className="hive-activity-dot is-pending">○</span>
-              <span className="hive-activity-name" style={{ color: "var(--hive-text-dim)" }}>Validator</span>
-              <span className="hive-activity-desc" style={{ color: "var(--hive-text-dim)" }}>waiting for build step</span>
-              <span className="hive-activity-meta">queued</span>
-            </div>
-            <div className="hive-activity-row">
-              <span className="hive-activity-dot is-pending">○</span>
-              <span className="hive-activity-name" style={{ color: "var(--hive-text-dim)" }}>Reviewer</span>
-              <span className="hive-activity-desc" style={{ color: "var(--hive-text-dim)" }}>waiting for verification</span>
-              <span className="hive-activity-meta">queued</span>
-            </div>
-          </div>
+          <AgentActivity
+            events={runtimeEvents}
+            runStatus={run?.status ?? latestRun?.status ?? null}
+            sessionId={selectedSessionId}
+          />
 
           {activeThread && activeThread.messages.length > 0 ? (
             <div className="messages-flow" style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
@@ -188,12 +164,8 @@ export function CodexSurface({
               ))}
             </div>
           ) : (
-            <div className="empty-codex-transcript" style={{ textAlign: "center", padding: "48px 16px", color: "var(--hive-text-secondary)" }}>
-              <div style={{ fontSize: "28px", color: "var(--hive-violet-soft)", marginBottom: "12px" }}>☿</div>
-              <h4 style={{ fontSize: "16px", fontWeight: 600, color: "var(--hive-text)", marginBottom: "6px" }}>Hive Code Agent Harness</h4>
-              <p style={{ fontSize: "13px", color: "var(--hive-text-dim)", maxWidth: "440px", margin: "0 auto" }}>
-                Type an objective below to inspect files, edit code, run tests, and verify changes within isolated worktrees.
-              </p>
+            <div className="hive-code-empty">
+              <p>Describe the change. HIVE edits, tests, and records evidence in this workspace.</p>
             </div>
           )}
           <div ref={transcriptEndRef} />
@@ -223,17 +195,17 @@ export function CodexSurface({
                   className="hive-composer-btn"
                   onClick={() => setComposerMode(composerMode === "agent" ? "plan" : "agent")}
                 >
-                  <span>Mode:</span>
-                  <span style={{ color: "var(--hive-text)", fontWeight: 600 }}>{composerMode.toUpperCase()}</span>
+                  <span className="hive-composer-kicker">Mode</span>
+                  <span className="hive-composer-value">{composerMode.toUpperCase()}</span>
                 </button>
                 <button
                   type="button"
-                  className="hive-composer-btn"
+                  className="hive-composer-btn hive-composer-model-btn"
                   onClick={onOpenModelPicker || onOpenSettings}
                 >
-                  <span>Model:</span>
-                  <span style={{ color: "var(--hive-text)", fontWeight: 600 }}>{displayModel}</span>
-                  <span>▾</span>
+                  <span className="hive-composer-kicker">Model</span>
+                  <span className="hive-composer-value">{displayModel}</span>
+                  <span className="hive-composer-chevron" aria-hidden="true">▾</span>
                 </button>
               </div>
               <button
@@ -256,7 +228,7 @@ export function CodexSurface({
         <InspectorTabs
           state={state}
           report={activeReport}
-          sessionId={activeThreadId || undefined}
+          sessionId={codingSessionId ?? undefined}
           defaultTab={defaultInspectorTab}
           onSelectFile={onSelectFile}
           onToggleDir={onToggleDir}

@@ -522,10 +522,9 @@ function assertSafeOutputLeaf(root: string, target: string): void {
   }
 }
 
-export async function writeHiveRunReport(
+export async function resolveHiveRunReportOutput(
   repositoryRoot: string,
   outputPath: string,
-  content: string,
 ): Promise<string> {
   const root = await fs.realpath(repositoryRoot);
   const target = path.resolve(root, outputPath);
@@ -541,6 +540,11 @@ export async function writeHiveRunReport(
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
+  return target;
+}
+
+export async function writeHiveRunReport(repositoryRoot: string, outputPath: string, content: string): Promise<string> {
+  const target = await resolveHiveRunReportOutput(repositoryRoot, outputPath);
   await fs.writeFile(target, content, { encoding: "utf8", flag: "wx", mode: 0o600 });
   return target;
 }

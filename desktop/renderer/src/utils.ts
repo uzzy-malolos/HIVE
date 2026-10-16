@@ -8,6 +8,10 @@ export function identifier(prefix: string): string {
 
 export const terminalStatuses = new Set(["completed", "failed", "cancelled"]);
 
+export function preferredScrollBehavior(): ScrollBehavior {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+}
+
 export function phaseTone(status?: string): "neutral" | "success" | "warning" | "error" {
   if (!status) return "neutral";
   if (status === "completed") return "success";

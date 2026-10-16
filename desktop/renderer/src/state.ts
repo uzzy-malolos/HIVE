@@ -211,7 +211,7 @@ export function reduceDesktopEvent(state: DesktopViewState, event: DesktopEvent 
       const firstUser = event.conversation.messages.find((message) => message.role === "user")?.content ?? "";
       const summary = {
         id: event.conversation.id,
-        title: firstUser.slice(0, 80) || "New task",
+        title: firstUser.replace(/\s+/g, " ").trim().slice(0, 80) || "New chat",
         role: event.conversation.role,
         updatedAt: event.conversation.updatedAt,
         messageCount: event.conversation.messages.length,

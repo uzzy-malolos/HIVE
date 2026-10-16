@@ -2,13 +2,16 @@ import React, { useState } from "react";
 import type { DesktopViewState } from "../state";
 import type { DesktopCommandInput } from "../bridge";
 import type { DesktopEvent } from "../../../../src/desktop/types";
-import { ChatSurface } from "./chat/ChatSurface";
+import { ChatSurface, type ChatModelOption } from "./chat/ChatSurface";
 import { CodexSurface } from "./codex/CodexSurface";
 
 export interface SplitWorkspaceProps {
   state: DesktopViewState;
   send: (command: DesktopCommandInput) => Promise<DesktopEvent>;
   activeModelName?: string;
+  modelOptions?: ChatModelOption[];
+  selectedModel?: { providerId: string; model: string } | null;
+  onSelectModel?: (choice: ChatModelOption) => void;
   onOpenModelPicker?: () => void;
   onOpenSettings?: () => void;
   onOpenRepositoryPicker?: () => void;
@@ -23,6 +26,9 @@ export function SplitWorkspace({
   state,
   send,
   activeModelName,
+  modelOptions,
+  selectedModel,
+  onSelectModel,
   onOpenModelPicker,
   onOpenSettings,
   onOpenRepositoryPicker,
@@ -41,6 +47,9 @@ export function SplitWorkspace({
           state={state}
           send={send}
           activeModelName={activeModelName}
+          modelOptions={modelOptions}
+          selectedModel={selectedModel}
+          onSelectModel={onSelectModel}
           onOpenModelPicker={onOpenModelPicker}
           onOpenSettings={onOpenSettings}
           onHandoffToCoder={onHandoffToCoder}

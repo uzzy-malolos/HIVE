@@ -4,6 +4,7 @@ import type { CodingFinalReport } from "../../../../../src/coding/types";
 import { ChangesView } from "../ChangesView";
 import { FileTree } from "../FileTree";
 import { TerminalOutput } from "../TerminalOutput";
+import { EvidencePanel } from "./EvidencePanel";
 
 export type InspectorTab = "changes" | "files" | "terminal" | "evidence" | "run";
 
@@ -36,10 +37,8 @@ export function InspectorTabs({
 
   const rootListing = workspaceListings[""] ?? null;
   const changedFilesCount = diff?.recordedFiles?.length || 0;
-
-  const isVerified = report?.verdict === "ACCEPTED";
-  const isRepairable = report?.verdict === "REPAIRABLE";
-  const isRejected = report?.verdict === "REJECTED";
+  const sessionLabel = activeRun?.codingSessionId ?? sessionId ?? "—";
+  const repositoryLabel = repositoryName(repositoryRoot);
 
   return (
     <aside className={`hive-inspector ${expandedReview ? "is-expanded" : ""}`} aria-label="Harness Inspector">
@@ -145,63 +144,44 @@ export function InspectorTabs({
         )}
 
         {/* Tab 4: Evidence */}
-        {tab === "evidence" && (
-          <div className="hive-evidence-card">
-            <div className={`hive-verdict-banner ${isVerified ? "is-accepted" : isRepairable ? "is-repairable" : isRejected ? "is-rejected" : "is-accepted"}`}>
-              <span>{isVerified ? "VERIFIED (ACCEPTED)" : isRepairable ? "NEEDS ATTENTION (REPAIRABLE)" : isRejected ? "REJECTED" : "VERIFIED (GATE PASSED)"}</span>
-            </div>
-
-            <div className="hive-evidence-rows">
-              <div className="hive-evidence-row">
-                <span>Unit Tests</span>
-                <span className="hive-evidence-val is-pass">
-                  {report?.validation?.length ? `${report.validation.length} CHECKS PASS` : "112 / 112 PASS"}
-                </span>
-              </div>
-              <div className="hive-evidence-row">
-                <span>Typecheck</span>
-                <span className="hive-evidence-val is-pass">0 ERRORS</span>
-              </div>
-              <div className="hive-evidence-row">
-                <span>Reviewer Findings</span>
-                <span className="hive-evidence-val is-pass">
-                  {report?.review?.length ? `${report.review.length} FINDINGS` : "0 FINDINGS"}
-                </span>
-              </div>
-              <div className="hive-evidence-row">
-                <span>Worktree Isolation</span>
-                <span className="hive-evidence-val">ISOLATED (.hivemind/worktrees)</span>
-              </div>
-              <div className="hive-evidence-row">
-                <span>Blocking Findings</span>
-                <span className="hive-evidence-val is-pass">0 BLOCKING</span>
-              </div>
-            </div>
-          </div>
-        )}
+        {tab === "evidence" && <EvidencePanel report={report} />}
 
         {/* Tab 5: Run */}
         {tab === "run" && (
           <div className="hive-evidence-rows" style={{ fontSize: "11px" }}>
             <div className="hive-evidence-row">
               <span>Session ID</span>
-              <span className="hive-mono">{sessionId || "sess-live"}</span>
+              <span className="hive-mono">{sessionLabel}</span>
             </div>
             <div className="hive-evidence-row">
               <span>Active Run Status</span>
-              <span className="hive-badge is-violet">{activeRun?.status || "idle"}</span>
+              <span className={runBadgeClass(activeRun?.status)}>{activeRun?.status ?? "no run"}</span>
             </div>
             <div className="hive-evidence-row">
               <span>Repository</span>
-              <span className="hive-mono">{repositoryRoot ? repositoryRoot.split(/[\\/]/).filter(Boolean).pop() : "HIVE"}</span>
+              <span className="hive-mono">{repositoryLabel}</span>
             </div>
             <div className="hive-evidence-row">
               <span>Branch</span>
-              <span className="hive-mono">{gitStatus?.branch || "main"}</span>
+              <span className="hive-mono">{gitStatus?.branch ?? "—"}</span>
             </div>
           </div>
         )}
       </div>
     </aside>
   );
+}
+
+function repositoryName(root: string | null): string {
+  if (!root) return "No repository";
+  const name = root.split(/[\\/]/).filter(Boolean).pop();
+  return name || root;
+}
+
+function runBadgeClass(status?: string): string {
+  if (status === "completed") return "hive-badge is-success";
+  if (status === "failed" || status === "cancelled") return "hive-badge is-error";
+  if (status === "paused") return "hive-badge is-warning";
+  if (status) return "hive-badge is-violet";
+  return "hive-badge";
 }

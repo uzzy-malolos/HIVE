@@ -413,6 +413,7 @@ export type DesktopCommand =
         model?: string;
         ground?: boolean;
         agent?: boolean;
+        regenerate?: boolean;
       };
     })
   | (DesktopCommandBase & { type: "chat.cancel"; conversationId: string })

@@ -58,6 +58,11 @@ export interface TaskRecord {
   reviewerVerdict?: string;
   providers: ProviderSnapshot[];
   transcripts?: Record<string, string[]>;
+  /** Set by `hive sessions archive`. Absent or false means the task cell is active in lists. */
+  archived?: boolean;
+  archivedAt?: string;
+  /** Source task id when this record was created by `hive sessions fork`. */
+  forkedFrom?: string;
 }
 
 export interface RepoInspectionResult {

@@ -44,4 +44,8 @@
   --hive-sidebar-width: 256px;
   --hive-titlebar-height: 42px;
   --hive-inspector-width: 390px;
+
+  /* Interaction motion: short ease-out, no resting loops */
+  --hive-motion: 180ms;
+  --hive-ease: cubic-bezier(0.16, 1, 0.3, 1);
 }

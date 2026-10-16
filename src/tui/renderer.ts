@@ -1,25 +1,33 @@
 /**
  * renderer.ts
  * Pure render functions for the HIVE TUI cockpit.
- * All output is ASCII-safe. ANSI color applied conditionally via state.colorEnabled.
+ * Untrusted text is sanitized before renderer-owned ANSI colors are applied.
  */
 
+import { redactKnownSecrets } from "../security/secrets.js";
 import { TuiState } from "./state.js";
+import { BRAND_COLORS } from "../ui/colors.js";
+import { fitStyledTerminalText, sanitizeTerminalText, terminalCellWidth, wrapDisplayLine } from "./display-text.js";
+import { glyphsFor, type Glyphs } from "./glyphs.js";
 import {
-  getWideHiveTitle,
-  getCompactHiveTitle,
-  getLargeHoneycombAscii,
-  getSmallHoneycombAscii,
-  renderHivePixelWordmark
-} from "../ui/banner.js";
-import {
-  stripAnsi,
-  gradientText,
-  applyColor,
-  TERMINAL_LINE_GRADIENT,
-  BRAND_COLORS,
-} from "../ui/colors.js";
-import { renderSubagentsPanel } from "./subagents.js";
+  boxPrompt,
+  COMPOSER_BOX_INSET,
+  COMPOSER_CURSOR,
+  expandedSubagentLines,
+  fitSpans,
+  fitVisible,
+  layoutComposer,
+  padRow,
+  planSessionFrame,
+  renderTranscriptRows,
+  rowWidth,
+  sessionFrameHeight,
+  sessionFrameWidth,
+  visibleComposerRows,
+  windowTranscript,
+  type Row,
+  type Tone,
+} from "./transcript-view.js";
 
 // -- Helpers -------------------------------------------------------------------
 
@@ -28,390 +36,371 @@ function rep(char: string, count: number): string {
   return char.repeat(count);
 }
 
-function padRight(text: string, width: number): string {
-  const bare = stripAnsi(text);
-  const pad = width - bare.length;
-  return text + (pad > 0 ? rep(" ", pad) : "");
+type Rgb = { r: number; g: number; b: number };
+
+/**
+ * Semantic colors: violet for HIVE, gold for the queen's crown, green and red
+ * only for change and outcome. Banded tones paint a background to the row's end.
+ */
+const TONE_COLORS: Record<Tone, { fg: Rgb; bg?: Rgb; band?: boolean }> = {
+  text: { fg: BRAND_COLORS.text },
+  muted: { fg: BRAND_COLORS.muted },
+  dim: { fg: BRAND_COLORS.dim },
+  accent: { fg: BRAND_COLORS.accent },
+  user: { fg: { r: 221, g: 214, b: 254 }, bg: { r: 30, g: 26, b: 51 }, band: true },
+  code: { fg: { r: 196, g: 181, b: 253 } },
+  add: { fg: { r: 134, g: 239, b: 172 }, bg: { r: 15, g: 46, b: 28 }, band: true },
+  del: { fg: { r: 252, g: 165, b: 165 }, bg: { r: 59, g: 18, b: 25 }, band: true },
+  hunk: { fg: { r: 103, g: 232, b: 249 } },
+  warn: { fg: { r: 245, g: 158, b: 11 } },
+  error: { fg: { r: 248, g: 113, b: 113 } },
+  ok: { fg: BRAND_COLORS.success },
+  violet: { fg: BRAND_COLORS.primary_bright },
+  lavender: { fg: { r: 167, g: 139, b: 250 } },
+  pale: { fg: { r: 221, g: 214, b: 254 } },
+  gold: { fg: { r: 245, g: 197, b: 66 } },
+  cursor: { fg: BRAND_COLORS.text, bg: { r: 167, g: 139, b: 250 } },
+};
+
+function sgr(text: string, tone: Tone): string {
+  const { fg, bg } = TONE_COLORS[tone];
+  const fore = `\x1b[38;2;${fg.r};${fg.g};${fg.b}m`;
+  const back = bg ? `\x1b[48;2;${bg.r};${bg.g};${bg.b}m` : "";
+  return `${fore}${back}${text}\x1b[0m`;
 }
 
-function safeClampLine(text: string, maxCols: number): string {
-  const bare = stripAnsi(text);
-  if (bare.length <= maxCols) return text;
-  // If we must clamp, we just strip ANSI to avoid leaking unclosed color tags.
-  // Then we crop and return raw ascii.
-  return bare.slice(0, maxCols);
+/**
+ * Plain text when color is off. With color and a width, a row ending in a
+ * banded tone (diff lines, user turns) carries that background to the edge.
+ */
+function paintRow(row: Row, enabled: boolean, width?: number): string {
+  if (!enabled) return row.map((part) => part.text).join("");
+  const last = row[row.length - 1];
+  const painted = row.map(({ text, tone }) => (text ? sgr(text, tone) : "")).join("");
+  if (width === undefined || !last || !TONE_COLORS[last.tone].band) return painted;
+  const gap = width - row.reduce((cells, part) => cells + terminalCellWidth(part.text), 0);
+  return gap > 0 ? painted + sgr(" ".repeat(gap), last.tone) : painted;
 }
 
-function hBorder(width: number, useColor: boolean): string {
-  const dashes = rep("-", width - 2);
-  const line = "+" + dashes + "+";
-  return useColor ? gradientText(line, TERMINAL_LINE_GRADIENT) : line;
-}
+// -- Picker --------------------------------------------------------------------
 
-function pipe(useColor: boolean): string {
-  return useColor ? gradientText("|", TERMINAL_LINE_GRADIENT) : "|";
-}
-
-function blankRow(width: number, useColor: boolean): string {
-  const p = pipe(useColor);
-  return p + rep(" ", width - 2) + p;
-}
-
-function contentRow(left: string, width: number, useColor: boolean): string {
-  const p = pipe(useColor);
-  const innerW = width - 2;
-  const bareLen = stripAnsi(left).length;
-  if (bareLen > innerW) {
-    const clamped = safeClampLine(left, innerW);
-    return p + clamped + p;
+/** Suggestions under the input box, Claude Code style. */
+export function renderPickerRows(state: TuiState): string[] {
+  const picker = state.picker;
+  if (!picker) return [];
+  const width = sessionFrameWidth(state.width);
+  const g = glyphsFor(state);
+  if (picker.items.length === 0) {
+    if (picker.loading) return [paintRow([{ text: "  Searching files", tone: "dim" }], state.colorEnabled)];
+    return [paintRow([{ text: picker.kind === "file" ? "  No matching files" : "  No matching commands", tone: "dim" }], state.colorEnabled)];
   }
-  const trail = rep(" ", innerW - bareLen);
-  return p + left + trail + p;
-}
-
-// -- Right Panel ---------------------------------------------------------------
-
-export function renderHelpPanel(state: TuiState, useColor: boolean, width: number, height: number): string[] {
-  if (state.transcript && state.transcript.length > 0 && state.taskStatus !== "idle") {
-    const lines = state.transcript.slice(-Math.max(1, height));
-    return lines.map(l => {
-      if (!useColor) return "  " + l;
-      if (l.startsWith("[HIVE]")) return "  " + applyColor(l, BRAND_COLORS.primary_bright.r, BRAND_COLORS.primary_bright.g, BRAND_COLORS.primary_bright.b);
-      if (l.startsWith("[Error]")) return "  " + applyColor(l, 255, 100, 100);
-      return "  " + applyColor(l, BRAND_COLORS.muted.r, BRAND_COLORS.muted.g, BRAND_COLORS.muted.b);
-    });
-  }
-
-  const HELP_PANEL_LINES = [
-    "HIVE CLI/IDE COMMAND COCKPIT",
-    rep("-", width),
-    "Welcome to HIVE.",
-    "Your terminal-native workspace for intelligent engineering.",
-    "",
-    "> Type /help to explore available commands",
-    "> Type /providers to inspect providers",
-    "> Type /status to view runtime status",
-    "> Type /model to select model",
-    "> Type /update to check for updates",
-    "",
-    "TIP",
-    "Press Shift+Tab to toggle permissions mode.",
-    "HIVE is built for focus, built for builders.",
-    "",
-    "Ready when you are.",
-  ];
-
-  return HELP_PANEL_LINES.map((l) => {
-    if (l === "" || !useColor) return l;
-    if (l === "HIVE CLI/IDE COMMAND COCKPIT" || l === "TIP") {
-      return applyColor(l, BRAND_COLORS.accent.r, BRAND_COLORS.accent.g, BRAND_COLORS.accent.b);
-    }
-    if (l.startsWith("> /")) {
-      const parts = l.split(" ");
-      const arrow = parts[0];
-      const cmd = parts[1];
-      const rest = parts.slice(2).join(" ");
-      const cCmd = applyColor(cmd, BRAND_COLORS.primary_bright.r, BRAND_COLORS.primary_bright.g, BRAND_COLORS.primary_bright.b);
-      return applyColor(arrow, BRAND_COLORS.muted.r, BRAND_COLORS.muted.g, BRAND_COLORS.muted.b) + " " + cCmd + " " + rest;
-    }
-    if (l.startsWith("-")) {
-      return gradientText(l, TERMINAL_LINE_GRADIENT);
-    }
-    return applyColor(l, BRAND_COLORS.muted.r, BRAND_COLORS.muted.g, BRAND_COLORS.muted.b);
+  return picker.items.map((item, index) => {
+    const selected = index === picker.selected;
+    return paintRow(fitSpans([
+      { text: selected ? `  ${g.focus} ` : "    ", tone: "accent" },
+      { text: item.label, tone: selected ? "accent" : "text" },
+      { text: item.detail ? `  ${item.detail}` : "", tone: "dim" },
+    ], width), state.colorEnabled);
   });
 }
 
-// -- Lower Dashboard -----------------------------------------------------------
+// -- Transcript ----------------------------------------------------------------
 
-function renderLowerPanels(width: number, useColor: boolean): string[] {
-  if (width < 100) return [];
-  
-  const cols3 = width >= 120;
-  
-  const col1 = [
-    "BRAND KIT / COLOR PALETTE",
-    "Deep Violet        #5B21B6",
-    "Vivid Violet       #7C3AED",
-    "Lavender           #A78BFA",
-    "Pale Highlight     #DDD6FE",
-    "Neon Line Accent   #8B5CF6",
-    "Background         #08080B",
-    "Muted Text         #9CA3AF"
-  ];
-  
-  const col2 = [
-    "TYPOGRAPHY",
-    "Display: pixel/block bitmap style",
-    "Interface: clean mono terminal style",
-    "",
-    "DISPLAY EXAMPLE",
-    useColor ? "## HIVE" : "## HIVE" // Small example
-  ];
-
-  const col3 = [
-    "RUNTIME / BRAND NOTE",
-    "HIVE - Hyper Intelligence for Verified Engineering.",
-    "provider: <provider>",
-    "model: <model>",
-    "mode: <mode>",
-    "agents: <n>",
-    "ctx: <n>%",
-    "",
-    "BRAND TRAITS",
-    "[#] retro-tech",
-    "[#] ASCII-safe",
-    "[#] violet gradient",
-    "[#] terminal-native"
-  ];
-  
-  const c1w = 32;
-  const c2w = 36;
-  const c3w = 40;
-  
-  const lines: string[] = [];
-  lines.push(hBorder(width, useColor));
-  
-  for (let i = 0; i < 13; i++) {
-    if (!col1[i] && !col2[i] && !col3[i]) continue;
-    const styleItem = (text: string, title: boolean) => {
-      if (!useColor) return text;
-      if (title) return applyColor(text, BRAND_COLORS.accent.r, BRAND_COLORS.accent.g, BRAND_COLORS.accent.b);
-      return applyColor(text, BRAND_COLORS.muted.r, BRAND_COLORS.muted.g, BRAND_COLORS.muted.b);
-    };
-
-    const t1 = styleItem(padRight(col1[i] || "", c1w), i === 0);
-    const t2 = styleItem(padRight(col2[i] || "", c2w), i === 0);
-    const t3 = cols3 ? styleItem(padRight(col3[i] || "", c3w), i === 0) : "";
-    
-    let inner = "";
-    if (cols3) {
-      const gap = Math.max(2, Math.floor((width - 4 - c1w - c2w - c3w) / 2));
-      inner = t1 + rep(" ", gap) + t2 + rep(" ", gap) + t3;
-    } else {
-      const gap = Math.max(2, width - 4 - c1w - c2w);
-      inner = t1 + rep(" ", gap) + t2;
-    }
-    
-    lines.push(contentRow(inner, width, useColor));
-  }
-  
-  return lines;
-}
-
-// -- Main Panel: output history ------------------------------------------------
-
+/** Visible transcript rows, colored by tone when color is on. */
 export function renderMainPanel(
   state: TuiState,
   availableRows: number
 ): string[] {
-  const { outputLines, transcript } = state;
-  // If we are showing transcript in the main panel because it is too large for the right panel:
-  if (transcript && transcript.length > 0 && state.taskStatus !== "idle") {
-     return transcript.slice(-Math.max(1, availableRows)).map(l => "  " + l);
-  }
-  return outputLines.slice(-Math.max(1, availableRows));
+  const width = sessionFrameWidth(state.width);
+  const rows = renderTranscriptRows(state, width);
+  return windowTranscript<Row>(rows, Math.max(0, availableRows), state.scrollOffset, [])
+    .map((row) => paintRow(row, state.colorEnabled, width));
 }
 
-// -- Input Row -----------------------------------------------------------------
-
-export function renderInputRow(state: TuiState): string {
-  const prompt = state.running
-    ? "  [running...] "
-    : "  > ";
-  const cursor = state.colorEnabled
-    ? applyColor("_", BRAND_COLORS.accent.r, BRAND_COLORS.accent.g, BRAND_COLORS.accent.b)
-    : "_";
-  
-  const text = state.colorEnabled 
-    ? applyColor(state.input, BRAND_COLORS.text.r, BRAND_COLORS.text.g, BRAND_COLORS.text.b)
-    : state.input;
-    
-  return prompt + text + cursor;
+/** Private, transient display rows. They are never appended to the transcript. */
+export function renderMcpInputRows(state: TuiState, width: number): string[] {
+  const modal = state.mcpInput;
+  if (!modal) return [];
+  const request = modal.request;
+  const rows = [`MCP input: ${request.serverId}`, "Private input for this server; excluded from saved conversation history.", "", request.message, ""];
+  if (request.mode === "url") {
+    rows.push("Open this URL manually and complete the server's flow:", request.url, "", "Then type accept and press Enter. /decline declines; Esc cancels.");
+  } else {
+    const properties = request.requestedSchema.properties;
+    const required = Array.isArray(request.requestedSchema.required) ? request.requestedSchema.required : [];
+    const fields: Array<[string, unknown]> = properties && typeof properties === "object" && !Array.isArray(properties) ? Object.entries(properties) : [];
+    rows.push("Do not enter passwords, API keys, tokens or secrets. Sign-in belongs in the URL flow.", "Enter a JSON object. Existing defaults are submitted only when you press Enter.", "Fields:");
+    for (const [key, field] of fields.slice(0, 32)) {
+      rows.push(`${required.includes(key) ? "*" : "-"} ${key}${required.includes(key) ? " (required)" : " (optional)"}: ${JSON.stringify(field)}`);
+    }
+    rows.push("", "/decline declines; Esc cancels. PgUp/PgDn scroll these fields.");
+  }
+  if (modal.error) rows.splice(1, 0, modal.error, "");
+  return rows.flatMap((line) => sanitizeTerminalText(line).slice(0, 32_768).split("\n").flatMap((part) => wrapDisplayLine(part, Math.max(1, width))));
 }
 
-// -- Footer / Status Rail ------------------------------------------------------
+function displayValue(value: unknown): string {
+  if (value === undefined || value === null || value === "") return "none";
+  return String(value);
+}
 
-export function renderFooter(state: TuiState, width: number): string {
-  const { provider, model, mode, agents, contextPercent, colorEnabled } = state;
+/** Branch name from `git rev-parse --abbrev-ref HEAD` stdout. Empty and failed output stay blank. */
+export function parseGitBranch(output: string): string | undefined {
+  const line = output.replace(/^﻿/, "").split(/\r?\n/, 1)[0]?.trim() ?? "";
+  if (!line || /[\u0000-\u001f\u007f-\u009f]/.test(line)) return undefined;
+  return line.length > 200 ? line.slice(0, 200) : line;
+}
 
-  const sep = colorEnabled
-    ? applyColor(" - ", BRAND_COLORS.dim.r, BRAND_COLORS.dim.g, BRAND_COLORS.dim.b)
-    : " - ";
+function finiteUsage(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
 
-  function field(label: string, value: string | number | undefined | null): string {
-    const valStr = value === undefined || value === null ? "none" : String(value);
-    const lbl = colorEnabled
-      ? applyColor(label + ":", BRAND_COLORS.muted.r, BRAND_COLORS.muted.g, BRAND_COLORS.muted.b)
-      : label + ":";
-    const val = colorEnabled
-      ? applyColor(valStr, BRAND_COLORS.text.r, BRAND_COLORS.text.g, BRAND_COLORS.text.b)
-      : valStr;
-    return lbl + val;
+/**
+ * Token text only when a subagent already carries a usage total.
+ * Dollar cost only when that same usage already has a numeric cost. Never invented.
+ */
+function recordedUsage(state: TuiState): { tokens?: number; cost?: number } {
+  let tokens = 0;
+  let sawTokens = false;
+  let cost = 0;
+  let sawCost = false;
+  for (const task of state.subagents ?? []) {
+    const usage = task.tokenUsage as { input?: unknown; output?: unknown; total?: unknown; cost?: unknown } | undefined;
+    if (!usage) continue;
+    const total = finiteUsage(usage.total);
+    const parts = finiteUsage(usage.input) !== undefined || finiteUsage(usage.output) !== undefined
+      ? (finiteUsage(usage.input) ?? 0) + (finiteUsage(usage.output) ?? 0)
+      : undefined;
+    const count = total ?? parts;
+    if (count !== undefined) {
+      tokens += count;
+      sawTokens = true;
+    }
+    const taskCost = finiteUsage(usage.cost);
+    if (taskCost !== undefined) {
+      cost += taskCost;
+      sawCost = true;
+    }
   }
+  return {
+    tokens: sawTokens ? tokens : undefined,
+    cost: sawCost ? cost : undefined,
+  };
+}
 
-  const scoutStr = state.scoutSignals ? `ready / ${state.scoutSignals} sigs / ${state.scoutDocs} docs / ${state.scoutRiskNotes} risks` : "loading...";
+function formatUsage(usage: { tokens?: number; cost?: number }): string {
+  const parts: string[] = [];
+  if (usage.tokens !== undefined) parts.push(`${usage.tokens} tok`);
+  if (usage.cost !== undefined) parts.push(`$${usage.cost}`);
+  return parts.join(" ");
+}
 
-  const leftParts = [
-    colorEnabled ? applyColor("[default]", BRAND_COLORS.accent.r, BRAND_COLORS.accent.g, BRAND_COLORS.accent.b) : "[default]",
-    colorEnabled ? applyColor("hive main", BRAND_COLORS.muted.r, BRAND_COLORS.muted.g, BRAND_COLORS.muted.b) : "hive main",
-    field("status", state.taskStatus || "idle"),
-    field("provider", provider),
-    field("model", model),
-    field("agents", agents),
-    field("ctx", contextPercent + "%"),
-    field("scout", scoutStr)
+/** "1 queued" plus the first line of the oldest waiting draft. */
+export function formatMessageQueue(queue: readonly string[] | undefined): string | undefined {
+  if (!queue || queue.length === 0) return undefined;
+  const first = sanitizeTerminalText(redactKnownSecrets(queue[0] ?? "")).split("\n", 1)[0]?.trim() ?? "";
+  const label = `${queue.length} queued`;
+  return first ? `${label}  ${first}` : label;
+}
+
+// -- Status bar ----------------------------------------------------------------
+
+const MODE_TONES: Record<string, Tone> = { guarded: "accent", standard: "text", autonomous: "warn", plan: "hunk", review: "hunk" };
+
+function statusHint(state: TuiState, g: Glyphs): string {
+  if (state.mcpInput) return `enter submits ${g.dot} /decline ${g.dot} esc cancels ${g.dot} pgup/pgdn scroll`;
+  if (state.picker) return `enter selects ${g.dot} esc closes`;
+  if (state.pendingPermission) return `${g.bullet === "*" ? "up/down" : "↑↓"} select ${g.dot} enter confirms ${g.dot} esc declines`;
+  if (state.scrollOffset > 0) return `scrolled ${g.dot} pgdn for latest`;
+  return "shift+tab to cycle";
+}
+
+/** Mode and context hint on the left; runtime, workspace and usage on the right. */
+export function renderStatusBar(state: TuiState, width: number): string {
+  const g = glyphsFor(state);
+  const mode = fitVisible(state.sessionMode || "guarded", 16);
+  const left: Row = [
+    { text: `  ${g.mode} ${mode} mode`, tone: MODE_TONES[mode] ?? "accent" },
+    { text: ` ${g.dot} ${statusHint(state, g)}`, tone: "dim" },
   ];
+  const place = [state.workspaceName, state.gitBranch ? `(${state.gitBranch})` : undefined].filter(Boolean).join(" ");
+  const usage = formatUsage(recordedUsage(state));
+  const agents = state.subagents?.length ?? 0;
+  const session = fitVisible(state.conversation?.id || state.sessionId || "", 16);
+  // Most useful first: narrow terminals truncate from the end.
+  const parts = [
+    agents > 0 ? `Subagents ${agents}` : "",
+    `${displayValue(state.provider)}/${displayValue(state.model)}`,
+    usage,
+    place,
+    session ? `session:${session}` : "",
+  ]
+    .map((part) => fitVisible(part, width))
+    .filter(Boolean);
+  // The hint is the first thing to go when the runtime info would not fit.
+  const withHint = fitSpans(left, width);
+  const leftFit = width - rowWidth(withHint) - 3 >= 24 ? withHint : fitSpans(left.slice(0, 1), width);
+  const room = width - rowWidth(leftFit) - 3;
+  if (room < 8) return paintRow(leftFit, state.colorEnabled);
+  // Drop whole trailing segments rather than cutting one mid-word; only the first may be truncated.
+  const sep = ` ${g.dot} `;
+  let right = parts[0] ? fitVisible(parts[0], room) : "";
+  for (const part of parts.slice(1)) {
+    const next = right + sep + part;
+    if (terminalCellWidth(next) > room) break;
+    right = next;
+  }
+  const rightText = right + " ";
+  const gap = width - rowWidth(leftFit) - terminalCellWidth(rightText);
+  return paintRow([...leftFit, { text: " ".repeat(Math.max(1, gap)), tone: "text" }, { text: rightText, tone: "muted" }], state.colorEnabled);
+}
 
-  const left = leftParts.join(sep);
-  const rightRaw = state.taskStatus === "running" || state.taskStatus === "verifying" ? "Ctrl+C cancel" : "update: hive update  /help";
-  const right = colorEnabled
-    ? applyColor(rightRaw, BRAND_COLORS.muted.r, BRAND_COLORS.muted.g, BRAND_COLORS.muted.b)
-    : rightRaw;
+// -- Composer band -------------------------------------------------------------
 
-  const leftLen = stripAnsi(left).length;
-  const rightLen = stripAnsi(right).length;
-  const innerW = width - 2;
+function composerSpans(row: string, colorEnabled: boolean, prompt: string): Row {
+  const spans: Row = [];
+  let rest = row;
+  if (prompt && rest.startsWith(prompt)) {
+    spans.push({ text: prompt, tone: "accent" });
+    rest = rest.slice(prompt.length);
+  }
+  const mark = rest.indexOf(COMPOSER_CURSOR);
+  if (mark < 0) return [...spans, { text: rest, tone: "text" }];
+  return [
+    ...spans,
+    { text: rest.slice(0, mark), tone: "text" },
+    // A block cell in color; the underscore keeps plain frames readable.
+    { text: colorEnabled ? " " : "_", tone: "cursor" },
+    { text: rest.slice(mark + COMPOSER_CURSOR.length), tone: "text" },
+  ];
+}
 
-  let finalLeft = left;
-  let finalLeftLen = leftLen;
-  const maxLeftLen = Math.max(10, innerW - rightLen - 4);
-  
-  if (leftLen > maxLeftLen) {
-    finalLeft = safeClampLine(left, maxLeftLen - 3) + "...";
-    finalLeftLen = stripAnsi(finalLeft).length;
+/** Rounded box around body rows. An optional title sits in the top border. */
+function boxRows(body: Row[], width: number, g: Glyphs, tone: Tone, title?: string): Row[] {
+  const { tl, tr, bl, br, h, v } = g.box;
+  const inner = Math.max(1, width - COMPOSER_BOX_INSET);
+  const label = title ? fitVisible(` ${title} `, Math.max(0, width - 4)) : "";
+  const top: Row = [
+    { text: tl + (label ? h : ""), tone },
+    { text: label, tone: tone === "warn" ? "warn" : "text" },
+    { text: h.repeat(Math.max(0, width - 2 - (label ? 1 : 0) - terminalCellWidth(label))) + tr, tone },
+  ];
+  return [
+    top,
+    ...body.map((row): Row => [{ text: `${v} `, tone }, ...padRow(row, inner), { text: ` ${v}`, tone }]),
+    [{ text: bl + h.repeat(Math.max(0, width - 2)) + br, tone }],
+  ];
+}
+
+function formatTurnElapsed(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
+}
+
+/** "✻ Working… (12s · 3 agents · esc to interrupt)". Spins only when motion is on. */
+function workingRow(state: TuiState, g: Glyphs, now: number): Row {
+  const frames = g.spinner;
+  const glyph = state.motionEnabled ? frames[Math.floor(now / 250) % frames.length] : g.bullet === "*" ? "*" : "✻";
+  const details: string[] = [];
+  if (state.turnStartedAt !== undefined) details.push(formatTurnElapsed(now - state.turnStartedAt));
+  const agents = state.subagents?.length ?? 0;
+  if (agents > 0) details.push(`${agents} agent${agents === 1 ? "" : "s"}`);
+  const usage = formatUsage(recordedUsage(state));
+  if (usage) details.push(usage);
+  details.push("esc to interrupt");
+  return [
+    { text: `${glyph} `, tone: "accent" },
+    { text: `${state.taskStatus === "verifying" ? "Verifying" : "Working"}${g.ellipsis} `, tone: "lavender" },
+    { text: `(${details.join(` ${g.dot} `)})`, tone: "dim" },
+  ];
+}
+
+/** Numbered allow / decline options. Typing still works and is echoed in the box. */
+function selectorBody(state: TuiState, g: Glyphs): Row[] {
+  const choice = state.permissionChoice === 1 ? 1 : 0;
+  const options = ["Yes", "No"];
+  const rows: Row[] = options.map((option, index): Row => [
+    { text: index === choice ? `${g.focus} ` : "  ", tone: "accent" },
+    { text: `${index + 1}. ${option}`, tone: index === choice ? "accent" : "text" },
+    { text: index === 1 ? " (esc)" : "", tone: "dim" },
+  ]);
+  if ((state.input ?? "").length > 0) {
+    rows.push(composerSpans(`> ${state.input}${COMPOSER_CURSOR}`.replace(/\n/g, " "), state.colorEnabled, "> "));
+  }
+  return rows;
+}
+
+/**
+ * Working and queue lines, then the input box, or the permission selector
+ * while a decision is pending. Short terminals drop the box borders.
+ */
+export function renderComposerBand(state: TuiState, width: number, composerRows: number, now = Date.now()): string[] {
+  const g = glyphsFor(state);
+  const paint = (row: Row) => paintRow(fitSpans(row, width), state.colorEnabled);
+  const prompt = boxPrompt(state);
+  const activity: Row[] = [];
+  if (state.taskStatus === "running" || state.taskStatus === "verifying") activity.push(workingRow(state, g, now));
+  const queueText = state.mcpInput ? undefined : formatMessageQueue(state.messageQueue);
+  if (queueText) activity.push([{ text: `  ${queueText}`, tone: "dim" }]);
+
+  if (composerRows < 3) {
+    const layout = layoutComposer(state.input ?? "", state.cursor, width, prompt);
+    const line = composerSpans(visibleComposerRows(layout, 1)[0] ?? prompt, state.colorEnabled, prompt);
+    return (composerRows <= 1 ? [line] : [activity[0] ?? [], line]).map(paint);
   }
 
-  const gap = Math.max(1, innerW - finalLeftLen - rightLen - 2);
+  if (state.pendingPermission && !state.mcpInput) {
+    const title = (state.permissionPrompt ?? "Allow this action?").replace(/\s*\[y\/n\]\s*$/i, "");
+    const box = boxRows(selectorBody(state, g), width, g, "warn", title);
+    return [...activity, ...box].slice(-composerRows).map(paint);
+  }
 
-  const p = pipe(colorEnabled);
-  const trail = rep(" ", gap);
-  return p + " " + finalLeft + trail + right + " " + p;
+  const inner = Math.max(1, width - COMPOSER_BOX_INSET);
+  const layout = layoutComposer(state.input ?? "", state.cursor, inner, prompt);
+  const textBudget = Math.max(1, composerRows - 2 - activity.length);
+  const text = visibleComposerRows(layout, textBudget).map((row) => composerSpans(row, state.colorEnabled, prompt));
+  return [...activity, ...boxRows(text, width, g, "dim")].slice(-composerRows).map(paint);
 }
 
 // -- Full Screen Render --------------------------------------------------------
 
 export function renderTuiScreen(state: TuiState): string {
-  const { width: termWidth, height, colorEnabled } = state;
-  
-  const MAX_WIDTH = 160;
-  const actualWidth = Math.max(20, Math.min(termWidth > 0 ? termWidth : 40, MAX_WIDTH));
-  const panelWidth = Math.max(1, actualWidth - 2);
-  const subagentPanel = renderSubagentsPanel(state, panelWidth);
-
-  if (termWidth < 70) {
-    const border = hBorder(actualWidth, colorEnabled);
-    const lines: string[] = [
-      border,
-      contentRow(" HIVE - terminal coding cockpit", actualWidth, colorEnabled),
-      border,
-    ];
-    for (const line of subagentPanel) lines.push(contentRow(line, actualWidth, colorEnabled));
-
-    const fixedRows = lines.length + 5;
-    const outputRows = Math.max(1, height - fixedRows);
-    for (const outLine of renderMainPanel(state, outputRows)) {
-      const colored = colorEnabled
-        ? applyColor(outLine, BRAND_COLORS.text.r, BRAND_COLORS.text.g, BRAND_COLORS.text.b)
-        : outLine;
-      lines.push(contentRow(colored, actualWidth, colorEnabled));
-    }
-    lines.push(border);
-    lines.push(contentRow(renderInputRow(state), actualWidth, colorEnabled));
-    lines.push(border);
-    lines.push(contentRow(` status:${state.taskStatus} agents:${state.agents} ctx:${state.contextPercent}%`, actualWidth, colorEnabled));
-    lines.push(border);
-    return lines.map((line) => safeClampLine(line, actualWidth)).join("\n");
-  }
-
-  const useWideTitle = actualWidth >= 120;
-  
-  const titleLines = useWideTitle ? renderHivePixelWordmark({ colorEnabled, width: "wide" }) : getCompactHiveTitle(colorEnabled);
-  const motifLines = useWideTitle ? getLargeHoneycombAscii(colorEnabled) : getSmallHoneycombAscii(colorEnabled);
-  
-  const leftColLines = [
-    ...titleLines,
-    "",
-    ...motifLines
-  ];
-
-  const leftColW = useWideTitle ? 76 : 30;
-  const rightPanelW = Math.max(30, actualWidth - leftColW - 6);
-  const rightPanelLines = renderHelpPanel(state, colorEnabled, rightPanelW, leftColLines.length);
-
-  const lowerPanels = renderLowerPanels(actualWidth, colorEnabled);
-  
-  const FIXED_ROWS = 1 + // top border
-                     1 + // blank above title
-                     1 + // bottom border of top section
-                     1 + // input border top
-                     1 + // input row
-                     1 + // input border bottom
-                     1 + // footer
-                     1 + // footer border bottom
-                     subagentPanel.length +
-                     lowerPanels.length;
-
-  const frameContentRows = Math.max(leftColLines.length, rightPanelLines.length);
-  const outputRows = Math.max(2, height - FIXED_ROWS - frameContentRows - 1);
+  const termWidth = state.width > 0 ? state.width : 40;
+  const width = sessionFrameWidth(termWidth);
+  const height = sessionFrameHeight(state.height);
+  const colorEnabled = state.colorEnabled;
+  const modalState = state.mcpInput ? { ...state, subagentsExpanded: false, picker: undefined, messageQueue: [] } : state;
+  const subagentLines = expandedSubagentLines(modalState, width);
+  const pickerLines = renderPickerRows(modalState);
+  const plan = planSessionFrame(modalState);
 
   const lines: string[] = [];
-  const border = hBorder(actualWidth, colorEnabled);
-  const blank = blankRow(actualWidth, colorEnabled);
-
-  lines.push(border);
-  lines.push(blank);
-
-  for (let i = 0; i < frameContentRows; i++) {
-    const leftRaw = leftColLines[i] || "";
-    const rightRaw = rightPanelLines[i] || "";
-
-    const leftStr = padRight(leftRaw, leftColW);
-    const rightStr = padRight(rightRaw, rightPanelW);
-    
-    const clampedR = safeClampLine(rightStr, rightPanelW);
-
-    const inner = leftStr + "  " + clampedR;
-    const innerBare = stripAnsi(inner);
-    const totalInnerW = actualWidth - 4; 
-    
-    const trail = rep(" ", Math.max(0, totalInnerW - innerBare.length));
-    
-    const p = pipe(colorEnabled);
-    lines.push(p + " " + inner + trail + " " + p);
+  const modalRows = state.mcpInput ? renderMcpInputRows(state, width) : undefined;
+  const mainRows = modalRows
+    ? modalRows.slice(state.mcpInput?.scrollOffset ?? 0, (state.mcpInput?.scrollOffset ?? 0) + plan.transcriptRows).map((line) => paintRow([{ text: fitVisible(line, width), tone: "text" }], colorEnabled))
+    : renderMainPanel(state, plan.transcriptRows);
+  for (const line of mainRows) {
+    lines.push(fitStyledTerminalText(line, width));
   }
-
-  lines.push(blank);
-  lines.push(border);
-
-  for (const panelLine of subagentPanel) {
-    lines.push(contentRow(panelLine, actualWidth, colorEnabled));
+  if (modalRows) for (let index = mainRows.length; index < plan.transcriptRows; index += 1) lines.push("");
+  for (const line of subagentLines.slice(0, plan.subagentRows)) {
+    lines.push(fitStyledTerminalText(line, width));
   }
-  
-  const outputPanel = renderMainPanel(state, outputRows);
-  for (const outLine of outputPanel) {
-    const colored = colorEnabled
-      ? applyColor(outLine, BRAND_COLORS.text.r, BRAND_COLORS.text.g, BRAND_COLORS.text.b)
-      : outLine;
-    lines.push(contentRow(colored, actualWidth, colorEnabled));
+  for (const line of renderComposerBand(state, width, plan.composerRows).slice(0, plan.composerRows)) {
+    lines.push(fitStyledTerminalText(line, width));
   }
-
-  if (lowerPanels.length > 0) {
-    for (const pLine of lowerPanels) {
-      lines.push(pLine);
-    }
+  for (const line of pickerLines.slice(0, plan.pickerRows)) {
+    lines.push(fitStyledTerminalText(line, width));
   }
+  if (plan.statusRows > 0) lines.push(fitStyledTerminalText(renderStatusBar(state, width), width));
 
-  lines.push(border);
-  lines.push(contentRow(renderInputRow(state), actualWidth, colorEnabled));
-  lines.push(border);
-  lines.push(renderFooter(state, actualWidth));
-  lines.push(border);
-
-  if (termWidth > MAX_WIDTH) {
-    const leftPad = Math.floor((termWidth - MAX_WIDTH) / 2);
+  const framed = lines.slice(0, height);
+  while (framed.length < height) framed.push("");
+  if (termWidth > width) {
+    const leftPad = Math.floor((termWidth - width) / 2);
     const spaces = rep(" ", leftPad);
-    return lines.map(l => spaces + l).join("\n");
+    return framed.map((line) => spaces + line).join("\n");
   }
-
-  return lines.join("\n");
+  return framed.join("\n");
 }

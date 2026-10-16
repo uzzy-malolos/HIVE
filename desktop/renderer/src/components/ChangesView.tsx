@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { groupUnifiedDiff, parseUnifiedDiff } from "../diff";
 import { EmptyState } from "./EmptyState";
 import { StatusPill } from "./StatusPill";
+import { preferredScrollBehavior } from "../utils";
 
 export interface ChangesViewProps {
   patch?: string;
@@ -45,7 +46,7 @@ export function ChangesView({ patch, truncated }: ChangesViewProps) {
   };
 
   const scrollToFile = (startLineIndex: number) => {
-    lineRefs.current[startLineIndex]?.scrollIntoView({ behavior: "smooth", block: "start" });
+    lineRefs.current[startLineIndex]?.scrollIntoView({ behavior: preferredScrollBehavior(), block: "start" });
   };
 
   return (

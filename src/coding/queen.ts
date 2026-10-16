@@ -2,10 +2,16 @@ import { randomBytes } from "node:crypto";
 import type {
   AgentCompletionClient,
   AgentLoopEvent,
+  AgentLoopOptions,
   AgentToolExecutor,
   AgentToolResult,
 } from "./agent-loop.js";
 import { StructuredAgentLoop } from "./agent-loop.js";
+import { loadPluginAgent, loadTrustedPluginOutputStyle } from "../extensions/catalog.js";
+import { renderPluginOutputStyle } from "../extensions/plugin-output-styles.js";
+import { runPluginAgent } from "../extensions/plugin-agents.js";
+import type { McpUserInput } from "../extensions/mcp-client-host.js";
+import { redactStreamingText } from "../security/secrets.js";
 import {
   createDefaultTaskContract,
   validateTaskContract,
@@ -33,12 +39,13 @@ import {
 import {
   findDirtyScopeConflicts,
   inspectCodingRepository,
+  loadScopedRepositoryContext,
   repositoryStillMatches,
   toPersistedRepositorySnapshot,
   type RepositoryContext,
 } from "./repository.js";
 import { SubagentScheduler } from "./scheduler.js";
-import type { CodingSessionStore } from "./session-store.js";
+import { SessionPersistenceConflictError, type CodingSessionStore } from "./session-store.js";
 import { assertValidTaskGraph, serializeBuilderConflicts } from "./task-graph.js";
 import {
   CODING_SESSION_SCHEMA_VERSION,
@@ -73,6 +80,11 @@ import {
   type FailureClass,
 } from "./verdicts.js";
 import type { ProviderRegistryLike } from "./provider-router.js";
+import type { ExtensionOptions } from "../extensions/index.js";
+import { runHooks, type HookEvent } from "../extensions/index.js";
+import type { ProviderImageInput } from "../providers/types.js";
+import type { ToolPermissionRequest } from "./types.js";
+import { withCodingSessionLease } from "./session-lease.js";
 
 export interface QueenProviderOverride {
   providerId?: string;
@@ -93,6 +105,7 @@ export interface QueenToolFactoryOptions {
   repositoryRoot: string;
   sessionId: string;
   approvalPolicy: ApprovalPolicy;
+  signal: AbortSignal;
   emit: <TType extends RuntimeEventType>(
     type: TType,
     payload: RuntimeEvent<TType>["payload"],
@@ -105,6 +118,7 @@ export interface QueenToolFactory {
 
 export interface QueenWorktreeGateway {
   create(repositoryRoot: string, sessionId: string, baseCommit: string): Promise<string>;
+  inspect?(repositoryRoot: string, sessionId: string, worktreePath: string): Promise<{ fingerprint: string }>;
 }
 
 export interface QueenDependencies {
@@ -121,6 +135,8 @@ export interface QueenSessionOptions {
   objective?: string;
   sessionId?: string;
   resumeId?: string;
+  /** Start a fresh turn in a completed coding session's managed worktree. */
+  continuationId?: string;
   mode: CodeMode;
   approvalPolicy: ApprovalPolicy;
   maxAgents: number;
@@ -131,6 +147,20 @@ export interface QueenSessionOptions {
   roleOverrides?: Partial<Record<ProviderBindingRole, QueenProviderOverride>>;
   signal?: AbortSignal;
   onEvent?: (event: RuntimeEvent) => void;
+  /** Live assistant prose. Not persisted as a runtime event. */
+  onAssistantText?: (text: string) => void;
+  requestToolPermission?: (request: ToolPermissionRequest, signal: AbortSignal) => Promise<boolean>;
+  requestMcpInput?: McpUserInput;
+  enabledMcpServers?: readonly string[];
+  enabledLspServers?: readonly string[];
+  pluginAgentId?: string | null;
+  outputStyleId?: string | null;
+  enabledSkillIds?: readonly string[];
+  /** Captured explicit invocation sources, revalidated before each provider request. */
+  invokedSkillSources?: ReadonlyArray<{ id: string; text: string }>;
+  extensionOptions?: ExtensionOptions;
+  /** Ephemeral image payloads; never copied into records, events, or prompts. */
+  images?: readonly ProviderImageInput[];
   providerRegistries?: {
     project?: ProviderRegistryLike;
     global?: ProviderRegistryLike;
@@ -216,6 +246,15 @@ function reviewFindings(data: Record<string, unknown> | undefined): ReviewFindin
   return findings;
 }
 
+/** One buffered planner completion, published whole. Not a fabricated token stream. */
+function plannerVisibleText(plan: CodingPlan): string {
+  const parts = [plan.summary, plan.architecture, ...plan.risks]
+    .map((part) => part.trim())
+    .filter((part, index, all) => part.length > 0 && all.indexOf(part) === index);
+  const prose = redactStreamingText(parts.join("\n\n")).trim();
+  return prose === "[REDACTED]" ? "" : prose;
+}
+
 export class QueenOrchestrator {
   readonly #options: QueenSessionOptions;
   readonly #dependencies: QueenDependencies;
@@ -233,15 +272,26 @@ export class QueenOrchestrator {
   #evidenceLedger?: EvidenceLedger;
   #failures: FailureRecord[] = [];
   #integrations: IntegrationRecord[] = [];
+  #continuationOwnedPaths = new Set<string>();
+  #stopContinuations = 0;
+  readonly #subagentHookContext = new Map<string, string>();
+  readonly #toolExecutors = new Set<AgentToolExecutor>();
 
   public constructor(options: QueenSessionOptions, dependencies: QueenDependencies) {
+    if (options.resumeId && options.continuationId) {
+      throw new Error("resumeId and continuationId select different operations and cannot be combined.");
+    }
+    const selectedId = options.resumeId ?? options.continuationId;
+    if (selectedId && options.sessionId && selectedId !== options.sessionId) {
+      throw new Error("The coding session id must match the resumed or continued session.");
+    }
     if (!Number.isInteger(options.maxAgents) || options.maxAgents < 1) {
       throw new Error("maxAgents must be a positive integer.");
     }
     if (!Number.isInteger(options.maxRetries) || options.maxRetries < 0) {
       throw new Error("maxRetries must be a non-negative integer.");
     }
-    this.#options = options;
+    this.#options = { ...options, sessionId: selectedId ?? options.sessionId ?? createCodingSessionId() };
     this.#dependencies = dependencies;
     this.#clock = dependencies.clock ?? (() => new Date().toISOString());
     this.#retryDelay = dependencies.retryDelay ?? defaultRetryDelay;
@@ -280,15 +330,63 @@ export class QueenOrchestrator {
   }
 
   public async run(): Promise<CodingSessionRecord> {
+    const sessionId = this.#options.sessionId;
+    if (!sessionId) throw new Error("A coding session id is required.");
+    return withCodingSessionLease(this.#options.repositoryPath, sessionId, async () => {
+      if (!this.#options.resumeId && !this.#options.continuationId && await this.#dependencies.store.load(sessionId)) {
+        throw new Error(`Coding session ${sessionId} already exists; resume or continue it instead of overwriting it.`);
+      }
+      return this.#runWithLease();
+    }, this.#controller.signal);
+  }
+
+  async #runWithLease(): Promise<CodingSessionRecord> {
+    let persistenceFailure: SessionPersistenceConflictError | AggregateError | undefined;
     try {
       if (this.#options.resumeId) return await this.#resume();
+      if (this.#options.continuationId) return await this.#continue();
       return await this.#start();
     } catch (error) {
-      if (!this.#record || !this.#eventBus) throw error;
-      if (this.#controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
-        return await this.#finishCancelled(error);
+      if (error instanceof SessionPersistenceConflictError) {
+        persistenceFailure = error;
+        throw error;
       }
-      return await this.#finishFailed(error);
+      if (!this.#record || !this.#eventBus) throw error;
+      try {
+        if (this.#controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
+          return await this.#finishCancelled(error);
+        }
+        return await this.#finishFailed(error);
+      } catch (reportError) {
+        if (reportError instanceof SessionPersistenceConflictError) {
+          persistenceFailure = new AggregateError([error, reportError], "Coding session stopped and its terminal report conflicted with another writer.");
+          throw persistenceFailure;
+        }
+        throw reportError;
+      }
+    } finally {
+      const executors = [...this.#toolExecutors];
+      this.#toolExecutors.clear();
+      const closed = await Promise.allSettled(executors.map((tools) => Promise.resolve().then(() => tools.close?.())));
+      const failures = closed.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+      if (failures.length) {
+        const reason = `Tool cleanup failed: ${failures.map((failure) => redactStreamingText(failure instanceof Error ? failure.message : String(failure))).join("; ")}`;
+        if (persistenceFailure) throw new AggregateError([persistenceFailure, new Error(reason)], "Coding session persistence and tool cleanup failed.");
+        if (this.#record && this.#eventBus) {
+          this.#recordFailure("INFRASTRUCTURE_BLOCKER", undefined, 0, reason);
+          if (this.#record.status !== "cancelled") this.#record.status = "failed";
+          this.#record.verdict = "BLOCKED";
+          if (this.#record.finalReport) {
+            this.#record.finalReport.verdict = "BLOCKED";
+            this.#record.finalReport.verdictReasons = [reason];
+            this.#record.finalReport.result = "Coding session finished with a tool cleanup failure.";
+            this.#record.finalReport.outstanding = unique([...this.#record.finalReport.outstanding, reason]);
+            this.#record.finalReport.failures = [...this.#failures];
+          }
+          await this.#persist(true, false);
+        }
+        throw new Error(reason);
+      }
     }
   }
 
@@ -304,6 +402,8 @@ export class QueenOrchestrator {
       schemaVersion: CODING_SESSION_SCHEMA_VERSION,
       id: this.#options.sessionId ?? createCodingSessionId(),
       objective: this.#options.objective.trim(),
+      ...(this.#options.pluginAgentId ? { pluginAgentId: this.#options.pluginAgentId } : {}),
+      ...(this.#options.outputStyleId ? { outputStyleId: this.#options.outputStyleId } : {}),
       mode: this.#options.mode,
       approvalPolicy: this.#options.approvalPolicy,
       status: "created",
@@ -313,6 +413,7 @@ export class QueenOrchestrator {
       tasks: [],
       events: [],
       providerBindings: [],
+      turnStartSequence: 1,
       validationResults: [],
       reviewResults: [],
       files: [],
@@ -345,6 +446,11 @@ export class QueenOrchestrator {
     const sessionId = this.#options.resumeId as string;
     const loaded = await this.#dependencies.store.load(sessionId);
     if (!loaded) throw new Error(`Coding session ${sessionId} not found.`);
+    if (loaded.archived) throw new Error(`Coding session ${sessionId} is archived.`);
+    await this.#verifySavedWorktree(loaded);
+    this.#continuationOwnedPaths = new Set(
+      (loaded.turnHistory ?? []).flatMap((turn) => turn.files.map((file) => file.path)),
+    );
     this.#record = loaded;
     this.#nextBeeId = createBeeIdFactory(this.#nextBeeNumber(loaded.tasks));
     // Initialize evidence ledger for resumed session
@@ -354,7 +460,7 @@ export class QueenOrchestrator {
     this.#attachEventBus();
     if (loaded.status === "completed" || loaded.status === "cancelled") return loaded;
 
-    const context = await inspectCodingRepository(
+    const originalContext = await inspectCodingRepository(
       loaded.repository.root,
       loaded.objective,
       this.#controller.signal,
@@ -369,6 +475,9 @@ export class QueenOrchestrator {
       statusFingerprint: loaded.repository.fingerprint ?? "",
     };
     const comparison = await repositoryStillMatches(savedSnapshot, this.#controller.signal);
+    const context = loaded.repository.worktreePath && this.#dependencies.worktrees.inspect
+      ? await inspectCodingRepository(loaded.repository.worktreePath, loaded.objective, this.#controller.signal)
+      : originalContext;
     this.#record.approvalPolicy = this.#options.approvalPolicy;
     this.#record.mode = this.#options.mode;
     if (!comparison.matches && this.#record.approvalPolicy !== "always") {
@@ -387,7 +496,12 @@ export class QueenOrchestrator {
         staleTaskIds.push(task.id);
         this.#forceTerminalTask(task.id, "skipped", "Repository state changed; task assumptions are stale.");
       }
-      this.#record.repository = toPersistedRepositorySnapshot(context.snapshot);
+      this.#record.repository = {
+        ...toPersistedRepositorySnapshot(originalContext.snapshot),
+        worktreePath: loaded.repository.worktreePath,
+        worktreeFingerprint: loaded.repository.worktreeFingerprint,
+        worktreeBaseCommit: loaded.repository.worktreeBaseCommit,
+      };
       this.#record.plan = undefined;
       this.#emit("session.resumed", { repository: this.#record.repository, staleTaskIds });
       await this.#persist(true);
@@ -420,7 +534,106 @@ export class QueenOrchestrator {
     return this.#executeFresh(context);
   }
 
-  async #executeFresh(context: RepositoryContext): Promise<CodingSessionRecord> {
+  async #continue(): Promise<CodingSessionRecord> {
+    const sessionId = this.#options.continuationId as string;
+    if (!this.#options.objective?.trim()) throw new Error("A coding objective is required for a follow-up turn.");
+    const loaded = await this.#dependencies.store.load(sessionId);
+    if (!loaded) throw new Error(`Coding session ${sessionId} not found.`);
+    if (loaded.archived) throw new Error(`Coding session ${sessionId} is archived.`);
+    if (!["completed", "failed", "cancelled"].includes(loaded.status)) {
+      throw new Error(`Coding session ${sessionId} is ${loaded.status}; resume it before starting a follow-up turn.`);
+    }
+    await this.#verifySavedWorktree(loaded, true);
+    const originalContext = await inspectCodingRepository(
+      this.#options.repositoryPath,
+      this.#options.objective,
+      this.#controller.signal,
+    );
+    const context = loaded.repository.worktreePath
+      ? await inspectCodingRepository(loaded.repository.worktreePath, this.#options.objective, this.#controller.signal)
+      : originalContext;
+    const { turnHistory: savedHistory = [], ...currentTurn } = loaded;
+    let previousEndSequence = 0;
+    const turnHistory = savedHistory.map((turn) => {
+      const turnStartSequence = turn.turnStartSequence ?? previousEndSequence + 1;
+      previousEndSequence = Math.max(previousEndSequence, turn.events.at(-1)?.sequence ?? 0);
+      return { ...turn, turnStartSequence, events: turn.events.filter((event) => event.sequence >= turnStartSequence) };
+    });
+    const previousTurnStart = loaded.turnStartSequence ?? previousEndSequence + 1;
+    const previousTurn = {
+      ...currentTurn,
+      turnStartSequence: previousTurnStart,
+      events: loaded.events.filter((event) => event.sequence >= previousTurnStart),
+    };
+    this.#continuationOwnedPaths = new Set(
+      [...turnHistory, previousTurn].flatMap((turn) => turn.files.map((file) => file.path)),
+    );
+    this.#nextBeeId = createBeeIdFactory(this.#nextBeeNumber(
+      [...turnHistory, previousTurn].flatMap((turn) => turn.tasks),
+    ));
+    this.#record = {
+      schemaVersion: CODING_SESSION_SCHEMA_VERSION,
+      id: loaded.id,
+      forkedFrom: loaded.forkedFrom,
+      pluginAgentId: this.#options.pluginAgentId === null ? undefined : this.#options.pluginAgentId ?? loaded.pluginAgentId,
+      outputStyleId: this.#options.outputStyleId === null ? undefined : this.#options.outputStyleId ?? loaded.outputStyleId,
+      objective: this.#options.objective.trim(),
+      mode: this.#options.mode,
+      approvalPolicy: this.#options.approvalPolicy,
+      status: "created",
+      createdAt: loaded.createdAt,
+      updatedAt: this.#clock(),
+      repository: {
+        ...toPersistedRepositorySnapshot(originalContext.snapshot),
+        worktreePath: loaded.repository.worktreePath,
+        worktreeFingerprint: loaded.repository.worktreeFingerprint,
+        worktreeBaseCommit: loaded.repository.worktreePath ? context.snapshot.baseCommit : undefined,
+      },
+      turnHistory: [...turnHistory, previousTurn],
+      turnStartSequence: (loaded.events.at(-1)?.sequence ?? previousEndSequence) + 1,
+      tasks: [],
+      events: [...loaded.events],
+      providerBindings: [...loaded.providerBindings],
+      validationResults: [],
+      reviewResults: [],
+      files: [...loaded.files],
+      failures: [],
+      integrations: [],
+    };
+    this.#evidenceLedger = createEvidenceLedger(sessionId);
+    this.#attachEventBus();
+    this.#emit("session.created", {
+      objective: this.#record.objective,
+      mode: this.#record.mode,
+      approvalPolicy: this.#record.approvalPolicy,
+    });
+    this.#emit("session.started", { repository: this.#record.repository });
+    addEvidence(this.#evidenceLedger, createShaEvidence({
+      sourceRole: "queen",
+      sha: context.snapshot.baseCommit,
+      branch: context.snapshot.branch,
+    }));
+    await this.#persist(true);
+    return this.#executeFresh(context);
+  }
+
+  async #verifySavedWorktree(record: CodingSessionRecord, continuation = false): Promise<void> {
+    if (!record.repository.worktreePath) return;
+    const inspect = this.#dependencies.worktrees.inspect;
+    if (!inspect) {
+      if (continuation) throw new Error("Follow-up turns require a managed worktree inspector.");
+      return;
+    }
+    const current = await inspect(record.repository.root, record.id, record.repository.worktreePath);
+    if (continuation && !record.repository.worktreeFingerprint) {
+      throw new Error("The previous turn has no saved worktree content fingerprint; cannot continue safely.");
+    }
+    if (record.repository.worktreeFingerprint && current.fingerprint !== record.repository.worktreeFingerprint) {
+      throw new Error("Managed worktree changed outside the coding session; inspect those changes before continuing.");
+    }
+  }
+
+  async #executeFresh(context: RepositoryContext, continuationFeedback?: string): Promise<CodingSessionRecord> {
     assertNotAborted(this.#controller.signal);
     if (await this.#pauseAtBoundary()) return this.#recordOrThrow();
     this.#recordOrThrow().status = "planning";
@@ -434,7 +647,7 @@ export class QueenOrchestrator {
       return this.#runValidationReviewAndFinish(context, context.snapshot.root, undefined, []);
     }
 
-    const plan = await this.#runPlanner(context, scout.id);
+    const plan = await this.#runPlanner(context, scout.id, continuationFeedback);
     const builderBinding = await this.#resolveBinding("builder");
     let builderTasks = materializeBuilderTasks({
       sessionId: this.#recordOrThrow().id,
@@ -448,6 +661,7 @@ export class QueenOrchestrator {
       maxTasks: this.#options.maxTasks ?? 24,
       maxDepth: this.#options.maxDepth ?? 2,
     }).tasks;
+    if (continuationFeedback && this.#recordOrThrow().tasks.length + builderTasks.length > (this.#options.maxTasks ?? 24)) throw new Error("Stop hook replanning would exceed the session task budget.");
     assertValidTaskGraph(builderTasks, {
       maxTasks: this.#options.maxTasks ?? 24,
       maxDepth: this.#options.maxDepth ?? 2,
@@ -470,7 +684,7 @@ export class QueenOrchestrator {
       objective: this.#recordOrThrow().objective,
       repositoryRoot: context.snapshot.root,
       baseCommit: context.snapshot.baseCommit,
-      allowedPaths: builderTasks.flatMap((task) => task.fileScope),
+      allowedPaths: unique([...this.#continuationOwnedPaths, ...builderTasks.flatMap((task) => task.fileScope)]),
       riskLevel: plan.risks.length > 2 ? "high" : plan.risks.length > 0 ? "medium" : "low",
       budget: {
         maxRepairAttempts: this.#options.maxRetries,
@@ -494,7 +708,10 @@ export class QueenOrchestrator {
     }
 
     const scopes = builderTasks.flatMap((task) => task.fileScope);
-    const conflicts = findDirtyScopeConflicts(context.snapshot.dirtyFiles, scopes);
+    const conflicts = findDirtyScopeConflicts(
+      context.snapshot.dirtyFiles.filter((file) => !this.#continuationOwnedPaths.has(file)),
+      scopes,
+    );
     if (conflicts.length > 0) {
       this.#recordOrThrow().status = "paused";
       for (const task of builderTasks) {
@@ -539,6 +756,7 @@ export class QueenOrchestrator {
       context.snapshot.baseCommit,
     );
     record.repository.worktreePath = worktreePath;
+    record.repository.worktreeBaseCommit = context.snapshot.baseCommit;
 
     const builders = record.tasks.filter(
       (task) => task.role === "builder" && !isTerminalSubagentStatus(task.status),
@@ -596,7 +814,7 @@ export class QueenOrchestrator {
         changedFiles,
         allowedPaths,
         violations: scopeViolations,
-        repositorySha: this.#recordOrThrow().repository.baseCommit,
+        repositorySha: context.snapshot.baseCommit,
       }));
       if (this.#contract && scopeViolations.length > 0) {
         this.#recordFailure("SCOPE_VIOLATION", undefined, repairAttempt,
@@ -669,7 +887,7 @@ export class QueenOrchestrator {
             sourceRole: "validator",
             taskId: validator.id,
             exitCode: validation.exitCode ?? (validation.status === "passed" ? 0 : 1),
-            repositorySha: this.#recordOrThrow().repository.baseCommit,
+            repositorySha: context.snapshot.baseCommit,
             worktreePath: targetRoot,
           }));
         } else if (isTypecheck) {
@@ -677,7 +895,7 @@ export class QueenOrchestrator {
             sourceRole: "validator",
             taskId: validator.id,
             exitCode: validation.exitCode ?? (validation.status === "passed" ? 0 : 1),
-            repositorySha: this.#recordOrThrow().repository.baseCommit,
+            repositorySha: context.snapshot.baseCommit,
             worktreePath: targetRoot,
           }));
         } else if (isTest) {
@@ -685,7 +903,7 @@ export class QueenOrchestrator {
             sourceRole: "validator",
             taskId: validator.id,
             exitCode: validation.exitCode ?? (validation.status === "passed" ? 0 : 1),
-            repositorySha: this.#recordOrThrow().repository.baseCommit,
+            repositorySha: context.snapshot.baseCommit,
             worktreePath: targetRoot,
           }));
         } else {
@@ -694,7 +912,7 @@ export class QueenOrchestrator {
             taskId: validator.id,
             command: validation.command,
             exitCode: validation.exitCode ?? (validation.status === "passed" ? 0 : 1),
-            repositorySha: this.#recordOrThrow().repository.baseCommit,
+            repositorySha: context.snapshot.baseCommit,
             worktreePath: targetRoot,
           }));
         }
@@ -782,7 +1000,7 @@ export class QueenOrchestrator {
           taskId: reviewer.id,
           approved: latestReview.status === "passed",
           findings: latestReview.findings.map((f) => ({ severity: f.severity, summary: f.summary })),
-          repositorySha: this.#recordOrThrow().repository.baseCommit,
+          repositorySha: context.snapshot.baseCommit,
         }));
       }
 
@@ -835,7 +1053,7 @@ export class QueenOrchestrator {
         addEvidence(this.#evidenceLedger, createShaEvidence({
           sourceRole: "queen",
           sha: finalSha,
-          branch: this.#recordOrThrow().repository.branch ?? "detached",
+          branch: context.snapshot.branch,
         }));
         // Record integration
         const integration: IntegrationRecord = {
@@ -869,8 +1087,9 @@ export class QueenOrchestrator {
       addEvidence(this.#evidenceLedger, createCommandEvidence({
         sourceRole: "queen",
         command: "integrated-validation",
+        gateId: "gate-integrated-validation",
         exitCode: validationPassed ? 0 : 1,
-        repositorySha: this.#recordOrThrow().repository.baseCommit,
+        repositorySha: context.snapshot.baseCommit,
       }));
     }
 
@@ -948,6 +1167,8 @@ export class QueenOrchestrator {
     const scheduler = new SubagentScheduler(
       tasks,
       async (task, execution) => {
+        const starting = await this.#runLifecycleHook("subagent_start", { taskId: task.id, role: task.role }, execution.signal);
+        this.#subagentHookContext.set(task.id, starting.context);
         if (task.role === "validator") {
           return this.#runValidatorTask(task, execution.signal, targetRoot, context);
         }
@@ -1001,17 +1222,39 @@ export class QueenOrchestrator {
         return [id, dependency?.summary ?? dependency?.error ?? dependency?.status ?? "unknown"];
       }),
     );
-    const result = await new StructuredAgentLoop().run({
+    const loopOptions = {
       task,
       cwd: targetRoot,
-      sharedContext: context.scoutContext,
+      sharedContext: await loadScopedRepositoryContext(context, this.#recordOrThrow().repository.root, task.fileScope),
       dependencyOutputs,
       completionClient: this.#dependencies.provider,
+      images: this.#options.images,
       tools,
       signal,
-      onEvent: (event) => this.#projectAgentLoopEvent(event),
-    });
+      onEvent: (event: AgentLoopEvent) => this.#projectAgentLoopEvent(event),
+    };
+    const result = await this.#runProfiledAgentLoop(loopOptions);
     return { summary: result.summary, tokenUsage: result.usage };
+  }
+
+  async #runProfiledAgentLoop(options: AgentLoopOptions) {
+    const selected = this.#options.pluginAgentId;
+    const agent = selected ? await loadPluginAgent(this.#options.repositoryPath, selected, this.#options.extensionOptions) : undefined;
+    let stopHookActive = false;
+    const hookedOptions: AgentLoopOptions = { ...options,
+      sharedContext: [options.sharedContext, this.#subagentHookContext.get(options.task.id)].filter(Boolean).join("\n\n"),
+      beforeFinish: async (result) => {
+        const previous = await options.beforeFinish?.(result);
+        const ending = await this.#runLifecycleHook("subagent_stop", { taskId: options.task.id, role: options.task.role, lastAssistantMessage: result.summary, stop_hook_active: stopHookActive }, options.signal);
+        const feedback = [previous, ending.continuation].filter(Boolean).join("\n\n") || undefined;
+        if (feedback) stopHookActive = true;
+        return feedback;
+      },
+    };
+    return agent ? runPluginAgent({ ...hookedOptions, agent, revalidate: async () => {
+      const current = await loadPluginAgent(this.#options.repositoryPath, agent.id, this.#options.extensionOptions);
+      if (current.fingerprint !== agent.fingerprint) throw new Error("Selected plugin agent changed; inspect and trust it again");
+    } }) : new StructuredAgentLoop().run(hookedOptions);
   }
 
   async #runValidatorTask(
@@ -1051,14 +1294,15 @@ export class QueenOrchestrator {
       this.#emit("validation.completed", { result });
     }
 
-    const analysis = await new StructuredAgentLoop().run({
+    const analysis = await this.#runProfiledAgentLoop({
       task: { ...task, validationCommands: [] },
       cwd: targetRoot,
-      sharedContext: context.scoutContext,
+      sharedContext: await loadScopedRepositoryContext(context, this.#recordOrThrow().repository.root, task.fileScope),
       dependencyOutputs: {
         validationResults: JSON.stringify(results),
       },
       completionClient: this.#dependencies.provider,
+      images: this.#options.images,
       tools,
       signal,
       onEvent: (event) => this.#projectAgentLoopEvent(event),
@@ -1078,12 +1322,13 @@ export class QueenOrchestrator {
   ): Promise<{ summary: string; tokenUsage?: SubagentTask["tokenUsage"] }> {
     const tools = await this.#createTools(targetRoot);
     const diff = await tools.execute("inspect_diff", {}, task, signal);
-    const analysis = await new StructuredAgentLoop().run({
+    const analysis = await this.#runProfiledAgentLoop({
       task,
       cwd: targetRoot,
-      sharedContext: context.scoutContext,
+      sharedContext: await loadScopedRepositoryContext(context, this.#recordOrThrow().repository.root, task.fileScope),
       dependencyOutputs: { diff: diff.output || "No tracked diff." },
       completionClient: this.#dependencies.provider,
+      images: this.#options.images,
       tools,
       signal,
       onEvent: (event) => this.#projectAgentLoopEvent(event),
@@ -1128,7 +1373,7 @@ export class QueenOrchestrator {
     return this.#task(task.id);
   }
 
-  async #runPlanner(context: RepositoryContext, scoutId: string): Promise<CodingPlan> {
+  async #runPlanner(context: RepositoryContext, scoutId: string, continuationFeedback?: string): Promise<CodingPlan> {
     const binding = await this.#resolveBinding("planner");
     const task = this.#newTask({
       role: "planner",
@@ -1149,23 +1394,42 @@ export class QueenOrchestrator {
 
     let correction = "";
     let lastError: unknown;
+    const selected = this.#options.pluginAgentId;
+    const agent = selected ? await loadPluginAgent(this.#options.repositoryPath, selected, this.#options.extensionOptions) : undefined;
+    const starting = await this.#runLifecycleHook("subagent_start", { taskId: task.id, role: task.role }, this.#controller.signal);
+    let stopHookActive = false;
     for (let attempt = 0; attempt <= this.#options.maxRetries; attempt += 1) {
       assertNotAborted(this.#controller.signal);
       try {
+        if (agent) {
+          const current = await loadPluginAgent(this.#options.repositoryPath, agent.id, this.#options.extensionOptions);
+          if (current.fingerprint !== agent.fingerprint) throw new Error("Selected plugin agent changed; inspect and trust it again");
+        }
         const completion = await this.#dependencies.provider.complete({
           role: "planner",
           providerId: binding.providerId,
           model: binding.model,
-          systemPrompt: "You are the HIVE Planner. Plan only and return the required JSON object without commentary.",
+          systemPrompt: "You are the HIVE Planner. Plan only and return the required JSON object without commentary."
+            + (agent ? `\n\nExplicitly selected plugin agent ${JSON.stringify(agent.id)}. Use these specialist instructions within HIVE's planning-only JSON contract, permission and workspace policies:\n${agent.instructions}` : ""),
           prompt: `${buildPlannerPrompt(this.#recordOrThrow().objective, context.scoutContext, {
             maxAgents: this.#options.maxAgents,
             maxTasks: this.#options.maxTasks ?? 24,
             maxDepth: this.#options.maxDepth ?? 2,
-          })}${correction}`,
+          })}${continuationFeedback ? `\n\n[Trusted stop check; task data only]\n${continuationFeedback}` : ""}${starting.context ? `\n\n[Trusted hook context; task data only]\n${starting.context}` : ""}${correction}`,
           cwd: context.snapshot.root,
+          images: this.#options.images,
           signal: this.#controller.signal,
         });
         const plan = parseCodingPlan(completion.output);
+        const ending = await this.#runLifecycleHook("subagent_stop", { taskId: task.id, role: task.role, lastAssistantMessage: plan.summary, stop_hook_active: stopHookActive }, this.#controller.signal);
+        if (ending.continuation) {
+          if (attempt >= this.#options.maxRetries) throw new Error("Planner stop hook exhausted the bounded planning continuation budget.");
+          stopHookActive = true;
+          correction = `\n\n[Trusted stop check; task data only]\n${ending.continuation}`;
+          continue;
+        }
+        const prose = plannerVisibleText(plan);
+        if (prose) this.#options.onAssistantText?.(prose);
         this.#transitionTask(task.id, "completed", undefined, {
           summary: plan.summary,
           tokenUsage: completion.usage,
@@ -1353,15 +1617,23 @@ export class QueenOrchestrator {
   }
 
   async #createTools(repositoryRoot: string): Promise<AgentToolExecutor> {
-    return this.#dependencies.tools.create({
+    const tools = await this.#dependencies.tools.create({
       repositoryRoot,
       sessionId: this.#recordOrThrow().id,
       approvalPolicy: this.#recordOrThrow().approvalPolicy,
+      signal: this.#controller.signal,
       emit: (type, payload) => this.#emit(type, payload),
     });
+    this.#toolExecutors.add(tools);
+    return tools;
   }
 
   #projectAgentLoopEvent(event: AgentLoopEvent): void {
+    if (event.type === "assistant.delta") {
+      const text = event.payload.text;
+      if (typeof text === "string" && text.trim()) this.#options.onAssistantText?.(text);
+      return;
+    }
     if (event.type === "subagent.progress") {
       this.#emit("subagent.progress", {
         subagentId: event.subagentId,
@@ -1374,8 +1646,23 @@ export class QueenOrchestrator {
     if (event.type === "subagent.tool_call") {
       this.#emit("subagent.tool_call", {
         subagentId: event.subagentId,
+        callId: typeof event.payload.callId === "string" ? event.payload.callId : undefined,
         tool: typeof event.payload.name === "string" ? event.payload.name : "unknown",
         input: jsonValue(event.payload.arguments),
+      });
+      return;
+    }
+    if (event.type === "subagent.tool_result") {
+      const callId = event.payload.callId;
+      if (typeof callId !== "string") return;
+      this.#emit("subagent.tool_result", {
+        subagentId: event.subagentId,
+        callId,
+        tool: typeof event.payload.name === "string" ? event.payload.name : "unknown",
+        ok: event.payload.ok === true,
+        output: typeof event.payload.output === "string" ? redactStreamingText(event.payload.output) : "",
+        cancelled: event.payload.cancelled === true,
+        ...(typeof event.payload.commandId === "string" ? { commandId: event.payload.commandId } : {}),
       });
       return;
     }
@@ -1457,15 +1744,39 @@ export class QueenOrchestrator {
       record.status = "paused";
       await this.#persist(true);
       assertNotAborted(this.#controller.signal);
+      if (this.#recordOrThrow().status !== "paused") return true;
       this.#emit("session.paused", { reason: this.#pauseReason });
-      await this.#persist(true);
+      await this.#persist(true, false);
       assertNotAborted(this.#controller.signal);
       this.#pauseAcknowledged = true;
     }
     return true;
   }
 
-  async #persist(active = false): Promise<void> {
+  async #persist(active = false, verifyBoundary = true): Promise<void> {
+    const record = this.#recordOrThrow();
+    if (verifyBoundary && record.repository.worktreePath && this.#dependencies.worktrees.inspect &&
+      ["paused", "completed", "failed", "cancelled"].includes(record.status)) {
+      try {
+        record.repository.worktreeFingerprint = (await this.#dependencies.worktrees.inspect(
+          record.repository.root, record.id, record.repository.worktreePath,
+        )).fingerprint;
+      } catch (error) {
+        delete record.repository.worktreeFingerprint;
+        const reason = `Managed worktree could not be verified: ${error instanceof Error ? error.message : String(error)}`;
+        if (record.status !== "cancelled") record.status = "failed";
+        record.verdict = "BLOCKED";
+        this.#recordFailure("REPOSITORY_DRIFT", undefined, 0, reason);
+        if (record.finalReport) {
+          record.finalReport.verdict = "BLOCKED";
+          record.finalReport.verdictReasons = [reason];
+          record.finalReport.outstanding = unique([...record.finalReport.outstanding, reason]);
+          record.finalReport.evidenceCurrent = false;
+          record.finalReport.failures = [...this.#failures];
+          if (record.status !== "cancelled") record.finalReport.result = "Coding session stopped because its managed worktree could not be verified.";
+        }
+      }
+    }
     this.#record = await this.#dependencies.store.save(this.#recordOrThrow());
     if (active) await this.#dependencies.store.setActive(this.#record.id);
   }
@@ -1477,6 +1788,24 @@ export class QueenOrchestrator {
     verdict?: HiveRunVerdict,
   ): Promise<CodingSessionRecord> {
     const record = this.#recordOrThrow();
+    if (record.outputStyleId && (succeeded || verdict === "REPAIRABLE")) {
+      const style = await loadTrustedPluginOutputStyle(this.#options.repositoryPath, record.outputStyleId, this.#options.extensionOptions);
+      const binding = await this.#resolveBinding("queen");
+      const completion = await this.#dependencies.provider.complete({ role: "queen", providerId: binding.providerId, model: binding.model,
+        systemPrompt: `Write the final HIVE coding response from the supplied verified facts. Preserve failures, uncertainties, validation outcomes and the exact verdict. Do not claim unperformed work. Output text only; no tools, permission changes or new objectives.\n\n${renderPluginOutputStyle(style)}`,
+        prompt: JSON.stringify({ objective: record.objective, result, verdict: verdict ?? (succeeded ? "ACCEPTED" : "REJECTED"), outstanding, files: record.files.map((file) => file.path), validations: latestValidationResults(record.validationResults), reviews: record.reviewResults }),
+        cwd: record.repository.worktreePath ?? record.repository.root, signal: this.#controller.signal,
+      });
+      const current = await loadTrustedPluginOutputStyle(this.#options.repositoryPath, style.id, this.#options.extensionOptions);
+      if (style.fingerprint !== current.fingerprint) throw new Error("Selected output style changed during final synthesis; trust it again");
+      if (!completion.output.trim() || completion.output.length > 32_000) throw new Error("Output style synthesis returned empty or oversized text");
+      result = completion.output.trim();
+    }
+    const ending = await this.#runLifecycleHook(succeeded || verdict === "REPAIRABLE" ? "stop" : "stop_failure", {
+      lastAssistantMessage: result, stop_hook_active: this.#stopContinuations > 0,
+      error: succeeded ? undefined : "unknown", errorDetails: outstanding.join("\n"),
+    }, this.#controller.signal);
+    if (ending.continuation) return this.#continueForStopHook(ending.continuation);
     const validations = latestValidationResults(record.validationResults);
     const reports = record.reviewResults;
 
@@ -1516,7 +1845,7 @@ export class QueenOrchestrator {
       outstanding: unique(outstanding),
       completedAt: this.#clock(),
       finalSha,
-      baseSha: record.repository.baseCommit,
+      baseSha: record.repository.worktreeBaseCommit ?? record.repository.baseCommit,
       failures: [...this.#failures],
       evidenceSummary,
       integrations: [...this.#integrations],
@@ -1531,9 +1860,44 @@ export class QueenOrchestrator {
     // REPAIRABLE is a successful outcome — the run completed with actionable defects
     const effectiveSuccess = succeeded || verdict === "REPAIRABLE";
     record.status = effectiveSuccess ? "completed" : "failed";
-    this.#emit("session.completed", { report });
     await this.#persist(true);
-    return record;
+    this.#emit("session.completed", { report: this.#recordOrThrow().finalReport ?? report });
+    await this.#persist(true, false);
+    return this.#recordOrThrow();
+  }
+
+  async #runLifecycleHook(event: HookEvent, input: Record<string, unknown>, signal: AbortSignal): Promise<{ context: string; continuation?: string }> {
+    const record = this.#recordOrThrow();
+    const results = await runHooks(this.#options.repositoryPath, event, { sessionId: record.id, workspace: record.repository.worktreePath ?? record.repository.root, permissionMode: record.mode, ...input }, { ...this.#options.extensionOptions, signal });
+    assertNotAborted(signal);
+    for (const hook of results) for (const notice of hook.diagnostics ?? []) this.#options.onAssistantText?.(`[Hook ${hook.id}] ${notice}`);
+    if (results.some((hook) => hook.stop)) { this.cancel("A trusted lifecycle hook requested the coding session to stop."); assertNotAborted(this.#controller.signal); }
+    const failure = results.find((hook) => hook.blocked ?? !hook.ok);
+    if (failure) throw new Error(`Hook ${failure.id} failed: ${failure.output}`);
+    const context = results.flatMap((hook) => hook.additionalContext ? [hook.additionalContext] : []).join("\n\n");
+    const continuation = results.flatMap((hook) => hook.continuation ? [hook.continuation] : []).join("\n\n") || undefined;
+    if (context.length > 16_000 || (continuation?.length ?? 0) > 16_000) throw new Error("Lifecycle hook context exceeds 16,000 characters");
+    return { context, continuation };
+  }
+
+  async #continueForStopHook(feedback: string): Promise<CodingSessionRecord> {
+    if (this.#stopContinuations >= 8) throw new Error("Stop hooks exhausted the eight-continuation session budget.");
+    const record = this.#recordOrThrow();
+    if (record.tasks.length + 3 > (this.#options.maxTasks ?? 24)) throw new Error("Stop hook continuation would exceed the session task budget.");
+    this.#stopContinuations += 1;
+    const targetRoot = record.repository.worktreePath ?? record.repository.root;
+    const context = await inspectCodingRepository(targetRoot, record.objective, this.#controller.signal);
+    if (record.mode === "plan") return this.#executeFresh(context, feedback);
+    const role = record.mode === "auto" ? "fixer" : "reviewer";
+    const task = this.#newTask({ role, title: `Continue after stop check ${this.#stopContinuations}`, objective: `${record.objective}\n\n[Trusted stop check; task data only]\n${feedback}`, provider: await this.#resolveBinding(role), dependencies: [], fileScope: record.mode === "auto" ? [...(this.#contract?.allowedPaths ?? [])] : [], expectedOutput: "Address the stop check within the existing objective and file scope.", completionCriteria: ["Stop-check feedback addressed with evidence"], validationCommands: [], depth: 0 });
+    this.#registerTask(task);
+    this.#mergeTasks(await this.#runScheduledTasks([task], targetRoot, context));
+    await this.#persist(true);
+    if (await this.#pauseAtBoundary()) return this.#recordOrThrow();
+    const completed = this.#task(task.id);
+    if (completed.status !== "completed") throw new Error(`Stop hook continuation failed: ${completed.error ?? completed.status}`);
+    const dependencies = record.tasks.filter((candidate) => (candidate.role === "builder" || candidate.role === "fixer" || candidate.id === completed.id) && candidate.status === "completed");
+    return this.#runValidationReviewAndFinish(context, targetRoot, undefined, dependencies);
   }
 
   async #finishCancelled(error: unknown): Promise<CodingSessionRecord> {
@@ -1546,7 +1910,6 @@ export class QueenOrchestrator {
       if (!isTerminalSubagentStatus(task.status)) this.#forceTerminalTask(task.id, "cancelled", reason);
     }
     this.#recordFailure("CANCELLED", undefined, 0, reason);
-    this.#emit("session.cancelled", { reason });
     record.finalReport = {
       result: "Coding session cancelled.",
       verdict: "BLOCKED",
@@ -1561,7 +1924,7 @@ export class QueenOrchestrator {
       outstanding: [reason],
       completedAt: this.#clock(),
       finalSha: undefined,
-      baseSha: record.repository.baseCommit,
+      baseSha: record.repository.worktreeBaseCommit ?? record.repository.baseCommit,
       failures: [...this.#failures],
       evidenceSummary: [],
       integrations: [...this.#integrations],
@@ -1570,7 +1933,9 @@ export class QueenOrchestrator {
     record.verdict = "BLOCKED";
     record.failures = [...this.#failures];
     await this.#persist(true);
-    return record;
+    this.#emit("session.cancelled", { reason });
+    await this.#persist(true, false);
+    return this.#recordOrThrow();
   }
 
   async #finishFailed(error: unknown): Promise<CodingSessionRecord> {

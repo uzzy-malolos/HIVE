@@ -1,27 +1,47 @@
 import { ProviderAdapter, ProviderConfig, ProviderHealthResult, ProviderCompletionInput, ProviderCompletionResult, ProviderRequestCredential } from '../types.js';
 import { readSseStream } from '../streaming.js';
+import { validateProviderImages } from '../images.js';
+import { outputTokenLimit } from '../limits.js';
+
+function userParts(input: ProviderCompletionInput) {
+  return [
+    ...validateProviderImages(input.images).map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.data } })),
+    { text: input.prompt },
+  ];
+}
+
+function selectedKey(config: ProviderConfig, credential?: ProviderRequestCredential): string | undefined {
+  if (credential?.secret !== undefined) return credential.secret;
+  if (config.apiKeyEnv !== undefined) return process.env[config.apiKeyEnv];
+  if (config.tokenEnv !== undefined) return undefined;
+  return process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
+}
+
+function missingKey(config: ProviderConfig): string {
+  return config.tokenEnv && !config.apiKeyEnv ? "Google API-key authentication requires apiKeyEnv; tokenEnv-only authentication is unsupported."
+    : `Missing environment variable ${config.apiKeyEnv || "GEMINI_API_KEY"}`;
+}
 
 export class GoogleAdapter implements ProviderAdapter {
   kind = "google" as const;
 
   async healthCheck(config: ProviderConfig, credential?: ProviderRequestCredential): Promise<ProviderHealthResult> {
-    const defaultEnv = config.apiKeyEnv || "GEMINI_API_KEY";
-    if (!credential?.secret && !process.env[defaultEnv] && !process.env["GOOGLE_API_KEY"]) {
-      return { ok: false, providerId: config.id, message: `Missing environment variable ${defaultEnv}`, redactedError: "Missing key" };
+    if (!selectedKey(config, credential)) {
+      return { ok: false, providerId: config.id, message: missingKey(config), redactedError: "Missing key" };
     }
     return { ok: true, providerId: config.id, message: "API key is present in environment." };
   }
 
   async complete(config: ProviderConfig, input: ProviderCompletionInput, credential?: ProviderRequestCredential): Promise<ProviderCompletionResult> {
-    const defaultEnv = config.apiKeyEnv || "GEMINI_API_KEY";
-    const token = credential?.secret ?? process.env[defaultEnv] ?? process.env["GOOGLE_API_KEY"];
-    if (!token) throw new Error(`Missing environment variable ${defaultEnv}`);
+    const token = selectedKey(config, credential);
+    if (!token) throw new Error(missingKey(config));
 
     const modelId = input.model || config.defaultModel || "gemini-1.5-pro";
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${token}`;
 
     const body: any = {
-      contents: [{ role: "user", parts: [{ text: input.prompt }] }]
+      contents: [{ role: "user", parts: userParts(input) }],
+      ...(input.maxOutputTokens === undefined ? {} : { generationConfig: { maxOutputTokens: outputTokenLimit(input.maxOutputTokens) } }),
     };
 
     if (input.systemPrompt) {
@@ -30,6 +50,7 @@ export class GoogleAdapter implements ProviderAdapter {
 
     const res = await fetch(url, {
       method: "POST",
+      signal: input.signal,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
     });
@@ -37,7 +58,7 @@ export class GoogleAdapter implements ProviderAdapter {
     const data = await res.json() as any;
     if (!res.ok) throw new Error(data.error?.message || `Google error: ${res.status}`);
 
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    const text = publicText(data.candidates?.[0]?.content?.parts);
 
     return {
       output: text,
@@ -50,15 +71,15 @@ export class GoogleAdapter implements ProviderAdapter {
   }
 
   async streamComplete(config: ProviderConfig, input: ProviderCompletionInput, onChunk: (chunk: string) => void, credential?: ProviderRequestCredential): Promise<ProviderCompletionResult> {
-    const defaultEnv = config.apiKeyEnv || "GEMINI_API_KEY";
-    const token = credential?.secret ?? process.env[defaultEnv] ?? process.env["GOOGLE_API_KEY"];
-    if (!token) throw new Error(`Missing environment variable ${defaultEnv}`);
+    const token = selectedKey(config, credential);
+    if (!token) throw new Error(missingKey(config));
 
     const modelId = input.model || config.defaultModel || "gemini-1.5-pro";
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:streamGenerateContent?alt=sse&key=${token}`;
 
     const body: any = {
-      contents: [{ role: "user", parts: [{ text: input.prompt }] }]
+      contents: [{ role: "user", parts: userParts(input) }],
+      ...(input.maxOutputTokens === undefined ? {} : { generationConfig: { maxOutputTokens: outputTokenLimit(input.maxOutputTokens) } }),
     };
     if (input.systemPrompt) {
       body.systemInstruction = { parts: [{ text: input.systemPrompt }] };
@@ -66,12 +87,15 @@ export class GoogleAdapter implements ProviderAdapter {
 
     const res = await fetch(url, {
       method: "POST",
+      signal: input.signal,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
     });
 
-    const err = await res.json() as any;
-    if (!res.ok) throw new Error(err.error?.message || `Google error: ${res.status}`);
+    if (!res.ok) {
+      const err = await res.json() as any;
+      throw new Error(err.error?.message || `Google error: ${res.status}`);
+    }
     if (!res.body) throw new Error("Streaming response has no body.");
 
     let output = "";
@@ -83,7 +107,7 @@ export class GoogleAdapter implements ProviderAdapter {
       const parts = parsed.candidates?.[0]?.content?.parts;
       if (Array.isArray(parts)) {
         for (const part of parts) {
-          if (typeof part?.text === "string" && part.text) {
+          if (part?.thought !== true && typeof part?.text === "string" && part.text) {
             output += part.text;
             onChunk(part.text);
           }
@@ -100,4 +124,13 @@ export class GoogleAdapter implements ProviderAdapter {
 
     return { output, usage };
   }
+}
+
+function publicText(parts: unknown): string {
+  if (!Array.isArray(parts)) return "";
+  return parts.flatMap((part: unknown) => {
+    if (typeof part !== "object" || part === null || !("text" in part)) return [];
+    if ("thought" in part && part.thought === true) return [];
+    return typeof part.text === "string" ? [part.text] : [];
+  }).join("");
 }

@@ -105,6 +105,7 @@ export type EvidenceType =
   | "diff_inspection"
   | "security_check"
   | "reviewer_approval"
+  | "reviewer_finding"
   | "user_approval"
   | "repository_sha"
   | "command_execution"
@@ -468,7 +469,7 @@ export function createDefaultTaskContract(options: {
       id: "evidence-review",
       description: "Reviewer approval evidence",
       required: true,
-      evidenceType: "reviewer_approval",
+      evidenceType: "reviewer_finding",
       gateId: "gate-reviewer-approved",
       applicability: "required",
     },

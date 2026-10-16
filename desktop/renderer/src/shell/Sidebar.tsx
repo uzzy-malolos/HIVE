@@ -69,6 +69,11 @@ export function Sidebar({
   busy = false,
 }: SidebarProps) {
   const [path, setPath] = useState(repositoryPath);
+  const [chatQuery, setChatQuery] = useState("");
+  const needle = chatQuery.trim().toLowerCase();
+  const visibleSessions = needle
+    ? sessions.filter((session) => session.title.toLowerCase().includes(needle))
+    : sessions;
   const surfaceItems: { key: DesktopMode; label: string; ariaLabel: string; glyph: React.ReactNode }[] = [
     { key: "chat", label: "HiveChat", ariaLabel: "Chat", glyph: GLYPHS.chat },
     { key: "coder", label: "Hive Code", ariaLabel: "Codex", glyph: GLYPHS.coder },
@@ -80,14 +85,21 @@ export function Sidebar({
       <div className="hive-sidebar-scroll">
         {/* Zone A: Primary Actions */}
         <div className="hive-sidebar-actions">
-          <button type="button" className="hive-btn-new-task" onClick={onCreateTask} title="New task">
+          <button type="button" className="hive-btn-new-task" onClick={onCreateTask} title="New chat (Ctrl+Shift+O)">
             <span className="hive-btn-new-task__icon" aria-hidden="true">+</span>
-            <span className="hive-btn-new-task__label">New task</span>
+            <span className="hive-btn-new-task__label">New chat</span>
           </button>
-          <button type="button" className="hive-btn-search" onClick={onOpenSearch} title="Search sessions (Ctrl+K)">
-            <span className="hive-btn-search__label">Search sessions...</span>
-            <span className="hive-kbd-hint">Ctrl+K</span>
-          </button>
+          <label className="hive-btn-search hive-chat-search">
+            <input
+              type="search"
+              className="hive-chat-search-input"
+              value={chatQuery}
+              onChange={(event) => setChatQuery(event.target.value)}
+              placeholder="Search chats"
+              aria-label="Search chats"
+              onFocus={() => onOpenSearch?.()}
+            />
+          </label>
         </div>
 
         {/* Workspace Path Picker */}
@@ -100,30 +112,19 @@ export function Sidebar({
               }}
             >
               <div className="hive-sidebar-label">Repository</div>
-              <div style={{ display: "flex", gap: "4px" }}>
+              <div className="hive-repo-row">
                 <input
                   id="sidebar-repo-path"
                   value={path}
                   onChange={(event) => setPath(event.target.value)}
                   placeholder="C:\\source\\project"
                   aria-label="Repository path"
-                  className="hive-form-input"
-                  style={{
-                    flex: 1,
-                    height: "26px",
-                    padding: "0 0.4rem",
-                    fontSize: "11px",
-                  }}
+                  className="hive-form-input hive-repo-input"
                 />
                 <button
                   type="submit"
                   disabled={!path.trim()}
-                  className="hive-btn-secondary"
-                  style={{
-                    height: "26px",
-                    padding: "0 0.5rem",
-                    fontSize: "11px",
-                  }}
+                  className="hive-btn-secondary hive-repo-open"
                 >
                   {busy || repositoryPath ? "Open another" : "Open"}
                 </button>
@@ -156,28 +157,30 @@ export function Sidebar({
             {mode === "chat" ? "Recent chats" : "Active work"}
           </div>
           <div className="hive-session-list">
-            {sessions.length === 0 ? (
+            {visibleSessions.length === 0 ? (
               <div className="hive-session-row" style={{ color: "var(--hive-text-dim)" }}>
-                <span className="hive-session-title">No sessions yet</span>
+                <span className="hive-session-title">
+                  {needle ? "No matching chats" : mode === "coder" ? "No active work" : "No chats yet"}
+                </span>
               </div>
             ) : (
-              sessions.map((session) => {
-                const statusKind = session.status?.toLowerCase() || (session.kind === "chat" ? "done" : "running");
-                return (
-                  <button
-                    key={session.id}
-                    type="button"
-                    className={`hive-session-row${session.active ? " is-active" : ""}`}
-                    onClick={() => onSelectSession(session.id)}
-                    title={session.title}
-                  >
-                    <span className="hive-session-title">{session.title}</span>
-                    <span className={`hive-session-status is-${statusKind}`}>
-                      {session.status || session.kind}
+              visibleSessions.map((session) => (
+                <button
+                  key={session.id}
+                  type="button"
+                  className={`hive-session-row${session.active ? " is-active" : ""}`}
+                  onClick={() => onSelectSession(session.id)}
+                  title={session.title}
+                  aria-current={session.active ? "page" : undefined}
+                >
+                  <span className="hive-session-title">{session.title}</span>
+                  {session.status ? (
+                    <span className={`hive-session-status is-${session.status.toLowerCase()}`}>
+                      {session.status}
                     </span>
-                  </button>
-                );
-              })
+                  ) : null}
+                </button>
+              ))
             )}
           </div>
         </div>

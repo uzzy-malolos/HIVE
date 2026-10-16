@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { isCredentialFieldName, redactKnownSecrets } from "../security/secrets.js";
@@ -40,6 +40,13 @@ export class SessionCorruptionError extends Error {
   ) {
     super(`Corrupt coding session ${sessionId}: ${message}`);
     this.name = "SessionCorruptionError";
+  }
+}
+
+export class SessionPersistenceConflictError extends Error {
+  public constructor() {
+    super("Coding session persistence target changed during atomic replacement; the newer file was preserved.");
+    this.name = "SessionPersistenceConflictError";
   }
 }
 
@@ -143,11 +150,17 @@ function assertSessionShape(value: unknown, expectedId?: string): asserts value 
   }
   if (expectedId && value.id !== expectedId) throw new Error("snapshot id does not match its directory");
   if (!isNonEmptyString(value.objective)) throw new Error("objective is required");
+  if (value.pluginAgentId !== undefined && (typeof value.pluginAgentId !== "string" || !/^agent:[A-Za-z0-9][A-Za-z0-9_.-]*$/u.test(value.pluginAgentId))) throw new Error("invalid selected plugin agent id");
+  if (value.outputStyleId !== undefined && (typeof value.outputStyleId !== "string" || !/^style:[A-Za-z0-9][A-Za-z0-9_.-]*$/u.test(value.outputStyleId))) throw new Error("invalid selected output style id");
   if (!CODE_MODES.has(String(value.mode))) throw new Error("invalid mode");
   if (!APPROVAL_POLICIES.has(String(value.approvalPolicy))) throw new Error("invalid approval policy");
   if (!SESSION_STATUSES.has(String(value.status))) throw new Error("invalid session status");
   if (!isNonEmptyString(value.createdAt) || !isNonEmptyString(value.updatedAt)) {
     throw new Error("createdAt and updatedAt are required");
+  }
+  if (value.turnStartSequence !== undefined &&
+    (!Number.isSafeInteger(value.turnStartSequence) || Number(value.turnStartSequence) < 1)) {
+    throw new Error("turnStartSequence must be a positive integer");
   }
   if (!isRecord(value.repository)) throw new Error("repository snapshot is required");
   if (!isNonEmptyString(value.repository.root) || !isNonEmptyString(value.repository.capturedAt)) {
@@ -179,6 +192,35 @@ function assertSessionShape(value: unknown, expectedId?: string): asserts value 
     const validVerdicts = new Set(["ACCEPTED", "REPAIRABLE", "REJECTED", "BLOCKED"]);
     if (!validVerdicts.has(String(value.verdict))) {
       throw new Error(`Invalid verdict: ${String(value.verdict)}`);
+    }
+  }
+
+  if (value.archived !== undefined && typeof value.archived !== "boolean") {
+    throw new Error("archived must be a boolean");
+  }
+  if (value.archivedAt !== undefined && (value.archived !== true || !isNonEmptyString(value.archivedAt))) {
+    throw new Error("archivedAt is invalid");
+  }
+  if (value.forkedFrom !== undefined) {
+    if (!isNonEmptyString(value.forkedFrom) || !SESSION_ID_PATTERN.test(value.forkedFrom)) {
+      throw new Error("forkedFrom is invalid");
+    }
+  }
+  if (value.repository.worktreeFingerprint !== undefined &&
+    (typeof value.repository.worktreeFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(value.repository.worktreeFingerprint))) {
+    throw new Error("worktreeFingerprint is invalid");
+  }
+  if (value.turnHistory !== undefined) {
+    if (!Array.isArray(value.turnHistory)) throw new Error("turnHistory must be an array");
+    for (const turn of value.turnHistory) {
+      if (!isRecord(turn) || turn.turnHistory !== undefined || !["completed", "failed", "cancelled"].includes(String(turn.status))) {
+        throw new Error("turnHistory contains an invalid previous turn");
+      }
+      assertSessionShape(turn, value.id);
+      const turnStartSequence = turn.turnStartSequence;
+      if (turnStartSequence !== undefined && turn.events.some((event) => event.sequence < turnStartSequence)) {
+        throw new Error("turnHistory contains events from an earlier turn");
+      }
     }
   }
 
@@ -218,6 +260,33 @@ export function validateCodingSessionId(sessionId: string): void {
   }
 }
 
+async function persistenceTargetIdentity(file: string): Promise<string | null> {
+  try {
+    const stat = await fs.lstat(file, { bigint: true });
+    return [stat.dev, stat.ino, stat.mode, stat.nlink, stat.size, stat.mtimeNs, stat.ctimeNs].join(":");
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function renameSnapshot(temporary: string, destination: string): Promise<void> {
+  const expected = await persistenceTargetIdentity(destination);
+  for (let attempt = 0; ; attempt += 1) {
+    if (attempt > 0 && await persistenceTargetIdentity(destination) !== expected) {
+      throw new SessionPersistenceConflictError();
+    }
+    try {
+      await fs.rename(temporary, destination);
+      return;
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && (error.code === "EPERM" || error.code === "EBUSY")) || attempt >= 5) throw error;
+      // Windows readers can briefly deny replacement; retain both files and retry the same atomic rename.
+      await new Promise<void>((resolve) => setTimeout(resolve, 20 * 2 ** attempt));
+    }
+  }
+}
+
 export class CodingSessionStore {
   readonly #baseDirectory: string;
   readonly #clock: () => string;
@@ -254,7 +323,7 @@ export class CodingSessionStore {
       await handle.sync();
       await handle.close();
       handle = undefined;
-      await fs.rename(temporary, destination);
+      await renameSnapshot(temporary, destination);
     } finally {
       await handle?.close().catch(() => undefined);
       await fs.rm(temporary, { force: true }).catch(() => undefined);
@@ -299,13 +368,17 @@ export class CodingSessionStore {
 
   public async setActive(sessionId: string): Promise<void> {
     validateCodingSessionId(sessionId);
-    if (!(await this.load(sessionId))) throw new Error(`Coding session ${sessionId} does not exist.`);
+    const existing = await this.load(sessionId);
+    if (!existing) throw new Error(`Coding session ${sessionId} does not exist.`);
+    if (existing.archived) {
+      throw new Error(`Coding session ${sessionId} is archived. Run 'hive sessions unarchive ${sessionId}' to restore it.`);
+    }
     await fs.mkdir(this.#baseDirectory, { recursive: true });
     const destination = path.join(this.#baseDirectory, ACTIVE_SESSION_FILE);
     const temporary = path.join(this.#baseDirectory, `.${ACTIVE_SESSION_FILE}.${randomUUID()}.tmp`);
     try {
       await fs.writeFile(temporary, `${sessionId}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
-      await fs.rename(temporary, destination);
+      await renameSnapshot(temporary, destination);
     } finally {
       await fs.rm(temporary, { force: true }).catch(() => undefined);
     }
@@ -329,6 +402,125 @@ export class CodingSessionStore {
     await fs.rm(path.join(this.#baseDirectory, ACTIVE_SESSION_FILE), { force: true });
   }
 
+  public async archive(sessionId: string): Promise<CodingSessionRecord> {
+    const session = await this.requireSession(sessionId);
+    if (session.archived) return session;
+    session.archived = true;
+    session.archivedAt = this.#clock();
+    return this.save(session);
+  }
+
+  public async unarchive(sessionId: string): Promise<CodingSessionRecord> {
+    const session = await this.requireSession(sessionId);
+    if (!session.archived) return session;
+    session.archived = false;
+    delete session.archivedAt;
+    return this.save(session);
+  }
+
+  public async fork(sessionId: string): Promise<CodingSessionRecord> {
+    const source = await this.requireSession(sessionId);
+    await this.assertForkable(source);
+    const id = await this.allocateSessionId();
+    const copy = structuredClone(source);
+    copy.id = id;
+    copy.forkedFrom = source.id;
+    copy.archived = false;
+    delete copy.archivedAt;
+    copy.createdAt = this.#clock();
+    for (const task of copy.tasks) task.sessionId = id;
+    for (const event of copy.events) event.sessionId = id;
+    for (const turn of copy.turnHistory ?? []) {
+      turn.id = id;
+      for (const task of turn.tasks) task.sessionId = id;
+      for (const event of turn.events) event.sessionId = id;
+    }
+
+    const saved = await this.save(copy);
+    try {
+      await this.copyLogs(source.id, saved.id);
+    } catch (error) {
+      await fs.rm(this.getSessionDirectory(saved.id), { recursive: true, force: true });
+      throw error;
+    }
+    return (await this.load(saved.id)) ?? saved;
+  }
+
+  private async requireSession(sessionId: string): Promise<CodingSessionRecord> {
+    const session = await this.load(sessionId);
+    if (!session) throw new Error(`Session ${sessionId} not found.`);
+    return session;
+  }
+
+  private async allocateSessionId(): Promise<string> {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const id = `hive-${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
+      validateCodingSessionId(id);
+      try {
+        await fs.access(this.getSessionDirectory(id));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return id;
+        throw error;
+      }
+    }
+    throw new Error("Could not allocate a coding session id.");
+  }
+
+  private async assertForkable(record: CodingSessionRecord): Promise<void> {
+    const recorded = record.repository.worktreePath?.trim();
+    if (recorded) {
+      try {
+        await fs.lstat(recorded);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          throw new Error(`Cannot fork coding session ${record.id}: recorded worktree ${recorded} is missing.`);
+        }
+        throw error;
+      }
+      throw new Error(`Cannot fork coding session ${record.id}: it is bound to git worktree ${recorded}.`);
+    }
+
+    const conventional = path.join(path.dirname(this.#baseDirectory), "worktrees", record.id);
+    const conventionalStat = await fs.lstat(conventional).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (conventionalStat) {
+      throw new Error(`Cannot fork coding session ${record.id}: git worktree ${conventional} is still present.`);
+    }
+
+    const directory = this.getSessionDirectory(record.id);
+    const entries = await fs.readdir(directory);
+    const unexpected = entries.filter((name) => name !== SESSION_FILE && name !== "logs" && !name.startsWith("."));
+    if (unexpected.length > 0) {
+      throw new Error(`Cannot fork coding session ${record.id}: session directory contains files that cannot be copied safely (${unexpected.join(", ")}).`);
+    }
+
+    const logsPath = path.join(directory, "logs");
+    let logsStat: Awaited<ReturnType<typeof fs.lstat>> | null = null;
+    try {
+      logsStat = await fs.lstat(logsPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (!logsStat) return;
+    if (logsStat.isSymbolicLink() || !logsStat.isDirectory()) {
+      throw new Error(`Cannot fork coding session ${record.id}: logs path is not a regular directory.`);
+    }
+    await assertRegularTree(logsPath, record.id);
+  }
+
+  private async copyLogs(sourceId: string, destId: string): Promise<void> {
+    const source = path.join(this.getSessionDirectory(sourceId), "logs");
+    try {
+      await fs.access(source);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    await fs.cp(source, path.join(this.getSessionDirectory(destId), "logs"), { recursive: true });
+  }
+
   public async getAgent(sessionId: string, subagentId: string): Promise<SubagentTask | null> {
     validateCodingSessionId(sessionId);
     validateCodingSessionId(subagentId);
@@ -336,4 +528,37 @@ export class CodingSessionStore {
     if (!record) return null;
     return record.tasks.find((task) => task.id === subagentId) ?? null;
   }
+}
+
+async function assertRegularTree(root: string, sessionId: string): Promise<void> {
+  const realRoot = await fs.realpath(root);
+  const seen = new Set<string>();
+  const walk = async (current: string): Promise<void> => {
+    const realCurrent = await fs.realpath(current);
+    if (seen.has(realCurrent)) {
+      throw new Error(`Cannot fork coding session ${sessionId}: logs contain a directory cycle.`);
+    }
+    seen.add(realCurrent);
+    const entries = await fs.readdir(current, { withFileTypes: true });
+    for (const entry of entries) {
+      const child = path.join(current, entry.name);
+      const stats = await fs.lstat(child);
+      if (stats.isSymbolicLink()) {
+        throw new Error(`Cannot fork coding session ${sessionId}: ${entry.name} is a symlink.`);
+      }
+      if (stats.isDirectory()) {
+        const realChild = await fs.realpath(child);
+        const relative = path.relative(realRoot, realChild);
+        if (relative.startsWith("..") || path.isAbsolute(relative)) {
+          throw new Error(`Cannot fork coding session ${sessionId}: logs escape the session directory.`);
+        }
+        await walk(child);
+        continue;
+      }
+      if (!stats.isFile()) {
+        throw new Error(`Cannot fork coding session ${sessionId}: ${entry.name} is not a regular file.`);
+      }
+    }
+  };
+  await walk(root);
 }

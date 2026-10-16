@@ -9,6 +9,15 @@ export function enterAlternateScreen(): void {
   process.stdout.write("\x1b[?1049h");
 }
 
+/** Wheel events arrive as SGR mouse reports on the same stdin path as keys. */
+export function enableMouseTracking(): void {
+  process.stdout.write("\x1b[?1000h\x1b[?1006h");
+}
+
+export function disableMouseTracking(): void {
+  process.stdout.write("\x1b[?1006l\x1b[?1000l");
+}
+
 export function exitAlternateScreen(): void {
   process.stdout.write("\x1b[?1049l");
 }
@@ -40,6 +49,7 @@ export function clearScreenAndHome(): void {
 
 // -- Raw Mode -----------------------------------------------------------------
 export function enableRawMode(): boolean {
+  process.stdout.write("\x1b[?2004h");
   if (
     process.stdin.isTTY &&
     typeof process.stdin.setRawMode === "function"
@@ -52,6 +62,7 @@ export function enableRawMode(): boolean {
 }
 
 export function disableRawMode(): void {
+  process.stdout.write("\x1b[?2004l");
   if (
     process.stdin.isTTY &&
     typeof process.stdin.setRawMode === "function"
@@ -79,5 +90,6 @@ export function getTerminalSize(): { cols: number; rows: number } {
 
 // -- Write ---------------------------------------------------------------------
 export function writeFrame(content: string): void {
-  process.stdout.write(content);
+  // The caller homes the cursor; erase before drawing so full-width last cells survive.
+  process.stdout.write("\x1b[J" + content);
 }

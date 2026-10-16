@@ -1,5 +1,16 @@
 import { ProviderAdapter, ProviderConfig, ProviderHealthResult, ProviderCompletionInput, ProviderCompletionResult, ProviderRequestCredential } from '../types.js';
 import { readSseStream } from '../streaming.js';
+import { validateProviderImages } from '../images.js';
+import { outputTokenLimit } from '../limits.js';
+
+function userContent(input: ProviderCompletionInput) {
+  const images = validateProviderImages(input.images);
+  if (!images.length) return input.prompt;
+  return [
+    ...images.map((image) => ({ type: "image", source: { type: "base64", media_type: image.mimeType, data: image.data } })),
+    { type: "text", text: input.prompt },
+  ];
+}
 
 export class AnthropicAdapter implements ProviderAdapter {
   kind = "anthropic" as const;
@@ -18,10 +29,11 @@ export class AnthropicAdapter implements ProviderAdapter {
     const token = credential?.secret ?? process.env[defaultEnv];
     if (!token) throw new Error(`Missing environment variable ${defaultEnv}`);
 
-    const messages = [{ role: "user", content: input.prompt }];
+    const messages = [{ role: "user", content: userContent(input) }];
 
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
+      signal: input.signal,
       headers: {
         "Content-Type": "application/json",
         "x-api-key": token,
@@ -29,7 +41,7 @@ export class AnthropicAdapter implements ProviderAdapter {
       },
       body: JSON.stringify({
         model: input.model || config.defaultModel || "claude-3-5-sonnet-20240620",
-        max_tokens: 4096,
+        max_tokens: outputTokenLimit(input.maxOutputTokens) ?? 4096,
         system: input.systemPrompt,
         messages
       })
@@ -53,10 +65,11 @@ export class AnthropicAdapter implements ProviderAdapter {
     const token = credential?.secret ?? process.env[defaultEnv];
     if (!token) throw new Error(`Missing environment variable ${defaultEnv}`);
 
-    const messages = [{ role: "user", content: input.prompt }];
+    const messages = [{ role: "user", content: userContent(input) }];
 
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
+      signal: input.signal,
       headers: {
         "Content-Type": "application/json",
         "x-api-key": token,
@@ -64,15 +77,17 @@ export class AnthropicAdapter implements ProviderAdapter {
       },
       body: JSON.stringify({
         model: input.model || config.defaultModel || "claude-3-5-sonnet-20240620",
-        max_tokens: 4096,
+        max_tokens: outputTokenLimit(input.maxOutputTokens) ?? 4096,
         system: input.systemPrompt,
         messages,
         stream: true
       })
     });
 
-    const data = await res.json() as any;
-    if (!res.ok) throw new Error(data.error?.message || `Anthropic error: ${res.status}`);
+    if (!res.ok) {
+      const data = await res.json() as any;
+      throw new Error(data.error?.message || `Anthropic error: ${res.status}`);
+    }
     if (!res.body) throw new Error("Streaming response has no body.");
 
     let output = "";

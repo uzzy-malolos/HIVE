@@ -100,13 +100,22 @@ test('Scout Context Engine', async (t) => {
     assert.ok(formattedText.length <= 5000 + 2000, "Formatted output should not grossly overflow the raw budget constraint");
   });
 
-  await t.test('context pack generation works on current repo', async () => {
-    const root = process.cwd();
+  await t.test('context pack generation ranks task files in a controlled repository', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'hive-scout-context-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    await fs.mkdir(path.join(root, 'src'));
+    await fs.writeFile(path.join(root, 'package.json'), JSON.stringify({ name: 'scout-fixture', scripts: { test: 'node --test' } }));
+    await fs.writeFile(path.join(root, 'README.md'), '# Scout fixture\nTask context for an isolated repository.\n');
+    await fs.writeFile(path.join(root, 'src/orchestrator.ts'), 'export function orchestrate() { return "safe task"; }\n');
+    for (let index = 0; index < 12; index++) {
+      await fs.writeFile(path.join(root, 'src', `utility-${index}.ts`), `export const utility${index} = ${index};\n`);
+    }
     const pack = await generateContextPack(root, "update orchestrator safety");
     
     assert.ok(pack.generatedAt);
     assert.ok(pack.importantFiles.length > 0);
-    assert.ok(pack.docs.length >= 0);
+    assert.ok(pack.docs.some(doc => doc.path === 'README.md'));
+    assert.strictEqual(pack.projectName, 'scout-fixture');
     
     // Check ranking worked for orchestrator
     const topFiles = pack.importantFiles.slice(0, 5);

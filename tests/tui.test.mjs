@@ -105,43 +105,24 @@ test("TUI Renderer - renderTuiScreen", async (t) => {
     );
   });
 
-  await t.test("wide renderer contains honeycomb motif", () => {
-    const frame = renderTuiScreen({ ...baseState, width: 160 });
-    // Honeycomb has \__/ shape
-    assert.ok(
-      frame.includes("\\__/"),
-      "Expected honeycomb \\__/ in frame"
-    );
+  await t.test("interactive session keeps the brand helpers off the transcript", async () => {
+    const { getLargeHoneycombAscii } = await import("../dist/ui/banner.js");
+    const frame = renderTuiScreen({ ...baseState, width: 160, height: 30 });
+    assert.equal(frame.split("\n").length, 30);
+    assert.equal(frame.includes("\\__/"), false);
+    assert.equal(frame.includes("HIVE CLI/IDE COMMAND COCKPIT"), false);
+    assert.equal(frame.includes("BRAND KIT / COLOR PALETTE"), false);
+    assert.equal(frame.includes("TYPOGRAPHY"), false);
+    assert.equal(frame.includes("RUNTIME / BRAND NOTE"), false);
+    assert.match(getLargeHoneycombAscii(false).join("\n"), /\\__\//);
   });
 
-  await t.test("wide renderer contains HIVE CLI/IDE COMMAND COCKPIT", () => {
-    const frame = renderTuiScreen({ ...baseState, width: 160 });
-    assert.ok(
-      frame.includes("HIVE CLI/IDE COMMAND COCKPIT"),
-      "Expected 'HIVE CLI/IDE COMMAND COCKPIT' in right panel"
-    );
-  });
-
-  await t.test("wide renderer contains BRAND KIT / COLOR PALETTE", () => {
-    const frame = renderTuiScreen({ ...baseState, width: 160 });
-    assert.ok(frame.includes("BRAND KIT / COLOR PALETTE"));
-  });
-
-  await t.test("wide renderer contains TYPOGRAPHY", () => {
-    const frame = renderTuiScreen({ ...baseState, width: 160 });
-    assert.ok(frame.includes("TYPOGRAPHY"));
-  });
-
-  await t.test("wide renderer contains RUNTIME", () => {
-    const frame = renderTuiScreen({ ...baseState, width: 160 });
-    assert.ok(frame.includes("RUNTIME / BRAND NOTE"));
-  });
-
-  await t.test("wide renderer contains bottom IDE rail", () => {
-    const frame = renderTuiScreen({ ...baseState, width: 160 });
-    assert.ok(frame.includes("[default]"));
-    assert.ok(frame.includes("hive main"));
-    assert.ok(frame.includes("update: hive update  /help"));
+  await t.test("wide renderer shows the actual workspace, branch and help", () => {
+    const frame = renderTuiScreen({ ...baseState, width: 160, workspaceName: "fixture", gitBranch: "feature/testing" });
+    assert.ok(frame.includes("guarded mode"));
+    assert.ok(frame.includes("fixture (feature/testing)"));
+    assert.ok(!frame.includes("hive main"));
+    assert.ok(frame.includes("/help for commands"));
   });
 
   await t.test("no undefined/null appears in rendered output", () => {
@@ -191,8 +172,8 @@ test("TUI Renderer - renderTuiScreen", async (t) => {
     );
   });
 
-  await t.test("is ASCII-only after stripping ANSI", () => {
-    const frame = renderTuiScreen({ ...baseState, width: 160, colorEnabled: true });
+  await t.test("the ASCII glyph fallback is ASCII-only after stripping ANSI", () => {
+    const frame = renderTuiScreen({ ...baseState, width: 160, colorEnabled: true, asciiGlyphs: true, taskStatus: "running", turnStartedAt: Date.now() });
     const bare = stripAnsi(frame);
     for (let i = 0; i < bare.length; i++) {
       const code = bare.charCodeAt(i);

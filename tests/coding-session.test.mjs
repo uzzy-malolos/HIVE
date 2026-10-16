@@ -374,13 +374,24 @@ for (const pausePoint of ["post-scout", "post-builder", "mid-validation", "post-
 }
 
 for (const pausePoint of ["mid-fixer", "post-fixer", "mid-repair-validation", "post-repair-validation"]) {
-  test(`Queen resumes the persisted repair frontier after ${pausePoint} without duplicating Fixers`, async () => {
+  test(`Queen resumes the persisted repair frontier after ${pausePoint} without duplicating Fixers`, async (t) => {
     const root = await createRepository();
     try {
       await fs.appendFile(path.join(root, ".git", "info", "exclude"), "\n.worktrees/\n");
       const dependencies = runtimeDependencies(root, { failFirstValidation: true });
       let queen;
       let requested = false;
+      let transientLock = false;
+      if (pausePoint === "post-fixer") {
+        const rename = fs.rename;
+        t.mock.method(fs, "rename", async (source, destination) => {
+          if (requested && !transientLock && destination === path.join(dependencies.store.getSessionDirectory(`session-repair-${pausePoint}`), "session.json")) {
+            transientLock = true;
+            throw Object.assign(new Error("Snapshot reader temporarily denies replacement"), { code: "EPERM" });
+          }
+          return rename(source, destination);
+        });
+      }
       queen = new QueenOrchestrator({
         repositoryPath: root,
         objective: `Exercise repair frontier ${pausePoint}`,
@@ -405,7 +416,8 @@ for (const pausePoint of ["mid-fixer", "post-fixer", "mid-repair-validation", "p
         },
       }, dependencies);
       const paused = await queen.run();
-      assert.equal(paused.status, "paused");
+      assert.equal(paused.status, "paused", JSON.stringify({ requested, finalReport: paused.finalReport, tasks: paused.tasks, events: paused.events.slice(-12) }));
+      if (pausePoint === "post-fixer") assert.equal(transientLock, true, "the repair checkpoint must encounter the sharing violation");
       const completedBeforeResume = new Map(paused.tasks.filter((entry) => entry.status === "completed").map((entry) => [entry.id, { attempt: entry.attempt, summary: entry.summary, completedAt: entry.completedAt }]));
 
       const resumed = await new QueenOrchestrator({
@@ -431,6 +443,96 @@ for (const pausePoint of ["mid-fixer", "post-fixer", "mid-repair-validation", "p
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
+  });
+}
+
+for (const cleanupFailure of [false, true]) {
+  test(`Queen preserves a foreign checkpoint when a sharing retry detects another writer${cleanupFailure ? " and cleanup fails" : ""}`, async (t) => {
+    const root = await createRepository();
+    try {
+      await fs.appendFile(path.join(root, ".git", "info", "exclude"), "\n.worktrees/\n");
+      const dependencies = runtimeDependencies(root, { failFirstValidation: true });
+      if (cleanupFailure) {
+        const create = dependencies.tools.create;
+        dependencies.tools.create = (options) => ({ ...create(options), close: async () => { throw new Error("Fixture tool cleanup failed"); } });
+      }
+      const destination = path.join(dependencies.store.getSessionDirectory("session-foreign-checkpoint"), "session.json");
+      const foreign = "A different writer replaced this checkpoint\n";
+      const rename = fs.rename;
+      let injected = false;
+      let requested = false;
+      let queen;
+      t.mock.method(fs, "rename", async (source, target) => {
+        if (requested && !injected && target === destination) {
+          injected = true;
+          await fs.writeFile(destination, foreign);
+          throw Object.assign(new Error("Snapshot reader temporarily denies replacement"), { code: "EPERM" });
+        }
+        return rename(source, target);
+      });
+      queen = new QueenOrchestrator({
+        repositoryPath: root, objective: "Preserve a conflicting repair checkpoint", sessionId: "session-foreign-checkpoint",
+        mode: "auto", approvalPolicy: "changes", maxAgents: 1, maxRetries: 1,
+        onEvent: (event) => {
+          if (event.type === "task.completed" && queen.record?.tasks.find((entry) => entry.id === event.payload.taskId)?.role === "fixer") {
+            requested = true;
+            queen.requestPause();
+          }
+        },
+      }, dependencies);
+      await assert.rejects(queen.run(), (error) => cleanupFailure
+        ? error instanceof AggregateError && error.errors.some((entry) => entry.name === "SessionPersistenceConflictError")
+        : error.name === "SessionPersistenceConflictError");
+      assert.equal(injected, true);
+      assert.equal(await fs.readFile(destination, "utf8"), foreign, "failure reporting must not overwrite the foreign checkpoint");
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+}
+
+for (const terminalStatus of ["failed", "cancelled"]) {
+  test(`Queen preserves a foreign ${terminalStatus} report after a primary error and cleanup failure`, async (t) => {
+    const root = await createRepository();
+    try {
+      await fs.appendFile(path.join(root, ".git", "info", "exclude"), "\n.worktrees/\n");
+      const dependencies = runtimeDependencies(root);
+      const destination = path.join(dependencies.store.getSessionDirectory("session-terminal-conflict"), "session.json");
+      const foreign = "A different writer owns this terminal checkpoint\n";
+      const primaryError = Object.assign(new Error("Primary reviewer provider binding failed"), terminalStatus === "cancelled" ? { name: "AbortError" } : {});
+      const binding = dependencies.provider.bindingForRole;
+      let queen;
+      dependencies.provider.bindingForRole = async (role) => {
+        if (role === "reviewer") {
+          if (terminalStatus === "cancelled") queen.cancel("Primary provider operation was cancelled");
+          throw primaryError;
+        }
+        return binding(role);
+      };
+      const create = dependencies.tools.create;
+      dependencies.tools.create = (options) => ({ ...create(options), close: async () => { throw new Error("Fixture tool cleanup failed"); } });
+      const rename = fs.rename;
+      let injected = false;
+      t.mock.method(fs, "rename", async (source, target) => {
+        if (!injected && target === destination && queen.record?.status === terminalStatus) {
+          injected = true;
+          await fs.writeFile(destination, foreign);
+          throw Object.assign(new Error("Terminal snapshot reader temporarily denies replacement"), { code: "EPERM" });
+        }
+        return rename(source, target);
+      });
+      queen = new QueenOrchestrator({
+        repositoryPath: root, objective: "Preserve a conflicting terminal checkpoint", sessionId: "session-terminal-conflict",
+        mode: "auto", approvalPolicy: "changes", maxAgents: 1, maxRetries: 1,
+      }, dependencies);
+      let failure;
+      await assert.rejects(queen.run(), (error) => { failure = error; return true; });
+      assert.equal(injected, true);
+      assert.equal(await fs.readFile(destination, "utf8"), foreign, "cleanup must not overwrite the conflicting terminal report");
+      const causes = (error) => error instanceof AggregateError ? [error, ...error.errors.flatMap(causes)] : [error];
+      assert.ok(failure instanceof AggregateError);
+      assert.ok(causes(failure).includes(primaryError), "the primary provider error must remain available");
+      assert.ok(causes(failure).some((error) => error.name === "SessionPersistenceConflictError"));
+      assert.ok(causes(failure).some((error) => /Fixture tool cleanup failed/.test(error.message)));
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 }
 

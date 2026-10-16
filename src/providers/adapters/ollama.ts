@@ -1,13 +1,20 @@
-import { ProviderAdapter, ProviderConfig, ProviderHealthResult, ProviderCompletionInput, ProviderCompletionResult } from '../types.js';
+import { ProviderAdapter, ProviderConfig, ProviderHealthResult, ProviderCompletionInput, ProviderCompletionResult, ProviderRequestCredential } from '../types.js';
 import { readLineStream } from '../streaming.js';
+import { validateProviderImages } from '../images.js';
+import { outputTokenLimit } from '../limits.js';
+
+function userMessage(input: ProviderCompletionInput) {
+  const images = validateProviderImages(input.images);
+  return { role: "user", content: input.prompt, ...(images.length ? { images: images.map((image) => image.data) } : {}) };
+}
 
 export class OllamaAdapter implements ProviderAdapter {
   kind = "ollama" as const;
 
-  async healthCheck(config: ProviderConfig): Promise<ProviderHealthResult> {
+  async healthCheck(config: ProviderConfig, _credential?: ProviderRequestCredential, signal?: AbortSignal): Promise<ProviderHealthResult> {
     const baseUrl = config.baseUrl || "http://localhost:11434";
     try {
-      const res = await fetch(`${baseUrl}/api/tags`, { method: "GET" });
+      const res = await fetch(`${baseUrl}/api/tags`, { method: "GET", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000) });
       if (!res.ok) {
         return {
           ok: false,
@@ -18,6 +25,7 @@ export class OllamaAdapter implements ProviderAdapter {
       }
       return { ok: true, providerId: config.id, message: "Health check passed (Ollama is running)." };
     } catch (err: any) {
+      signal?.throwIfAborted();
       return { ok: false, providerId: config.id, message: `Ollama not reachable: ${err.message}`, redactedError: err.message };
     }
   }
@@ -28,13 +36,15 @@ export class OllamaAdapter implements ProviderAdapter {
     if (input.systemPrompt) {
       messages.push({ role: "system", content: input.systemPrompt });
     }
-    messages.push({ role: "user", content: input.prompt });
+    messages.push(userMessage(input));
 
     const res = await fetch(`${baseUrl}/api/chat`, {
       method: "POST",
+      signal: input.signal,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: input.model || config.defaultModel,
+        ...(input.maxOutputTokens === undefined ? {} : { options: { num_predict: outputTokenLimit(input.maxOutputTokens) } }),
         messages,
         stream: false
       })
@@ -59,13 +69,15 @@ export class OllamaAdapter implements ProviderAdapter {
     if (input.systemPrompt) {
       messages.push({ role: "system", content: input.systemPrompt });
     }
-    messages.push({ role: "user", content: input.prompt });
+    messages.push(userMessage(input));
 
     const res = await fetch(`${baseUrl}/api/chat`, {
       method: "POST",
+      signal: input.signal,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: input.model || config.defaultModel,
+        ...(input.maxOutputTokens === undefined ? {} : { options: { num_predict: outputTokenLimit(input.maxOutputTokens) } }),
         messages,
         stream: true
       })

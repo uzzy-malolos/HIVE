@@ -7,6 +7,7 @@ export type ProviderKind =
   | "ollama"
   | "local"
   | "oauth"
+  | "chatgpt-subscription"
   | "custom";
 
 export interface ProviderConfig {
@@ -37,10 +38,19 @@ export interface ProviderHealthResult {
   redactedError?: string;
 }
 
+/** Ephemeral image bytes for one request. Never persist these in config, events, or conversation history. */
+export interface ProviderImageInput {
+  mimeType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+  data: string;
+}
+
 export interface ProviderCompletionInput {
   prompt: string;
   model: string;
   systemPrompt?: string;
+  images?: readonly ProviderImageInput[];
+  signal?: AbortSignal;
+  maxOutputTokens?: number;
 }
 
 export interface ProviderCompletionResult {
@@ -60,7 +70,7 @@ export type ProviderChunkHandler = (chunk: string) => void;
 
 export interface ProviderAdapter {
   kind: ProviderKind;
-  healthCheck(config: ProviderConfig, credential?: ProviderRequestCredential): Promise<ProviderHealthResult>;
+  healthCheck(config: ProviderConfig, credential?: ProviderRequestCredential, signal?: AbortSignal): Promise<ProviderHealthResult>;
   complete(config: ProviderConfig, input: ProviderCompletionInput, credential?: ProviderRequestCredential): Promise<ProviderCompletionResult>;
   /**
    * Optional streaming variant of `complete`: invokes `onChunk` with partial

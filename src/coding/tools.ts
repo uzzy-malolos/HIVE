@@ -1,8 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { redactSecrets } from "../runner.js";
+import { redactKnownSecrets, redactStreamingText } from "../security/secrets.js";
+import { CheckpointStore } from "./checkpoints.js";
+import { extractPatchPaths } from "./patch-projection.js";
 import type {
   AgentToolExecutor,
   AgentToolName,
@@ -172,6 +175,7 @@ export interface CommandRunOptions {
   signal?: AbortSignal;
   taskId?: string;
   subagentId?: string;
+  toolCallId?: string;
 }
 
 export interface CommandResult {
@@ -381,7 +385,7 @@ function optionalNumber(args: Record<string, unknown>, key: string): number | un
 }
 
 function redactToolText(value: string): string {
-  let redacted = redactSecrets(value);
+  let redacted = redactKnownSecrets(redactSecrets(value));
   for (const pattern of COMMON_SECRET_PATTERNS) {
     redacted = redacted.replace(pattern, "[REDACTED]");
   }
@@ -405,33 +409,6 @@ function jsonValue(value: unknown, key?: string): JsonValue {
   return String(value);
 }
 
-function stripPatchPrefix(value: string): string | undefined {
-  const trimmed = value.trim().split("\t", 1)[0].replace(/^"|"$/g, "");
-  if (trimmed === "/dev/null") return undefined;
-  return trimmed.replace(/^[ab]\//, "");
-}
-
-function extractPatchPaths(patchText: string): string[] {
-  if (/GIT binary patch|(?:new|old) file mode 120000/.test(patchText)) {
-    throw new Error("Binary and symbolic-link patches are not supported.");
-  }
-  const paths = new Set<string>();
-  for (const line of patchText.split(/\r?\n/)) {
-    if (line.startsWith("diff --git ")) {
-      const match = line.match(/^diff --git (?:"a\/(.*?)"|a\/(\S+)) (?:"b\/(.*?)"|b\/(\S+))$/);
-      if (!match) throw new Error("Patch contains an unsupported diff header.");
-      for (const value of [match[1] ?? match[2], match[3] ?? match[4]]) {
-        if (value) paths.add(normalizeRepositoryPath(value.replace(/\\"/g, '"')));
-      }
-    } else if (line.startsWith("--- ") || line.startsWith("+++ ")) {
-      const filePath = stripPatchPrefix(line.slice(4));
-      if (filePath) paths.add(normalizeRepositoryPath(filePath));
-    }
-  }
-  if (paths.size === 0) throw new Error("Patch does not contain any repository file paths.");
-  return [...paths];
-}
-
 function extractDiffPaths(diffText: string): string[] {
   if (!diffText.trim()) return [];
   try {
@@ -447,6 +424,7 @@ export class RepositoryToolService implements AgentToolExecutor {
   readonly #approvalPolicy: ApprovalPolicy;
   readonly #fileScope: readonly string[];
   readonly #sessionDirectory: string;
+  readonly #checkpoints: CheckpointStore;
   readonly #defaultSubagentId?: string;
   readonly #defaultTimeoutMs: number;
   readonly #outputCapChars: number;
@@ -460,6 +438,7 @@ export class RepositoryToolService implements AgentToolExecutor {
     if (!SESSION_ID_PATTERN.test(options.sessionId)) throw new Error("RepositoryToolService requires a safe session id.");
     this.#repositoryRoot = path.resolve(options.repositoryRoot);
     this.#sessionId = options.sessionId;
+    this.#checkpoints = new CheckpointStore(this.#repositoryRoot, options.sessionId);
     this.#approvalPolicy = options.approvalPolicy;
     this.#fileScope = options.fileScope ?? [];
     this.#sessionDirectory = path.resolve(
@@ -495,6 +474,12 @@ export class RepositoryToolService implements AgentToolExecutor {
     absolute: string;
   }> {
     const relative = normalizeRepositoryPath(relativePath, options.allowRoot);
+    const assertNotCheckpoint = (candidate: string): void => {
+      if (/^\.hivemind\/checkpoints(?:\/|$)/i.test(candidate.replace(/\\/g, "/"))) {
+        throw new Error("Checkpoint snapshots are private; use checkpoint previews for paths and restore actions.");
+      }
+    };
+    assertNotCheckpoint(relative);
     const absolute = path.resolve(this.#repositoryRoot, ...relative.split("/").filter(Boolean));
     if (!isInside(this.#repositoryRoot, absolute)) throw new Error("Resolved path escapes the repository root.");
     const rootReal = await this.#rootReal();
@@ -502,6 +487,7 @@ export class RepositoryToolService implements AgentToolExecutor {
       const stat = await fs.lstat(absolute);
       const real = await fs.realpath(absolute);
       if (!isInside(rootReal, real)) throw new Error(`Symbolic-link path escapes the repository root: ${relative}`);
+      assertNotCheckpoint(path.relative(rootReal, real));
       if (options.forWrite && stat.isSymbolicLink()) {
         throw new Error(`Writing through a symbolic link is not allowed: ${relative}`);
       }
@@ -554,10 +540,10 @@ export class RepositoryToolService implements AgentToolExecutor {
     } as unknown as RuntimeEventInput);
   }
 
-  #emitTool(tool: AgentToolName, input: Record<string, unknown>, context?: ToolExecutionContext): void {
+  #emitTool(tool: AgentToolName, input: Record<string, unknown>, context?: ToolExecutionContext, callId?: string): void {
     const subagentId = this.#contextSubagent(context);
     if (!subagentId) return;
-    this.#emit("subagent.tool_call", { subagentId, tool, input: jsonValue(input) });
+    this.#emit("subagent.tool_call", { subagentId, callId, tool, input: jsonValue(input) });
   }
 
   #emitFileChange(result: FileWriteResult, context?: ToolExecutionContext): void {
@@ -703,9 +689,11 @@ export class RepositoryToolService implements AgentToolExecutor {
   public async createFile(relativePath: string, content: string, context?: ToolExecutionContext): Promise<FileWriteResult> {
     const resolved = await this.#resolvePath(relativePath, { forWrite: true });
     this.#assertWriteAllowed(resolved.relative, context);
-    await fs.mkdir(path.dirname(resolved.absolute), { recursive: true });
-    await this.#resolvePath(path.posix.dirname(resolved.relative), { allowRoot: true, forWrite: true });
-    await fs.writeFile(resolved.absolute, content, { encoding: "utf8", flag: "wx" });
+    await this.#checkpoints.runWrite([resolved.relative], "create_file", async () => {
+      await fs.mkdir(path.dirname(resolved.absolute), { recursive: true });
+      await this.#resolvePath(path.posix.dirname(resolved.relative), { allowRoot: true, forWrite: true });
+      await fs.writeFile(resolved.absolute, content, { encoding: "utf8", flag: "wx" });
+    }, [content]);
     const result = { path: resolved.relative, operation: "created" as const, bytes: Buffer.byteLength(content) };
     this.#emitFileChange(result, context);
     return result;
@@ -718,9 +706,11 @@ export class RepositoryToolService implements AgentToolExecutor {
       if (error.code === "ENOENT") return false;
       throw error;
     });
-    await fs.mkdir(path.dirname(resolved.absolute), { recursive: true });
-    await this.#resolvePath(path.posix.dirname(resolved.relative), { allowRoot: true, forWrite: true });
-    await fs.writeFile(resolved.absolute, content, "utf8");
+    await this.#checkpoints.runWrite([resolved.relative], "write_file", async () => {
+      await fs.mkdir(path.dirname(resolved.absolute), { recursive: true });
+      await this.#resolvePath(path.posix.dirname(resolved.relative), { allowRoot: true, forWrite: true });
+      await fs.writeFile(resolved.absolute, content, "utf8");
+    }, [content]);
     const result: FileWriteResult = {
       path: resolved.relative,
       operation: existed ? "modified" : "created",
@@ -747,7 +737,10 @@ export class RepositoryToolService implements AgentToolExecutor {
       throw new Error(`Edit search text occurs ${occurrences} times in ${resolved.relative}; use replaceAll or a unique match.`);
     }
     const updated = replaceAll ? content.split(search).join(replacement) : content.replace(search, replacement);
-    await fs.writeFile(resolved.absolute, updated, "utf8");
+    await this.#checkpoints.runWrite([resolved.relative], "edit_file", async () => {
+      await this.#resolvePath(resolved.relative, { forWrite: true });
+      await fs.writeFile(resolved.absolute, updated, "utf8");
+    }, [updated], new Map([[resolved.relative, createHash("sha256").update(content).digest("hex")]]));
     const result: FileWriteResult = {
       path: resolved.relative,
       operation: "modified",
@@ -771,7 +764,8 @@ export class RepositoryToolService implements AgentToolExecutor {
         throw error;
       }));
     }
-    const check = await this.#executeProcess(["git", "apply", "--check", "--recount", "-"], {
+    const projection = await this.#checkpoints.projectPatch(paths, patchText);
+    const check = await this.#executeProcess(["git", "-c", "core.autocrlf=false", "-c", "core.safecrlf=false", "apply", "--check", "--recount", "-"], {
       input: patchText,
       skipPolicyValidation: true,
       signal: context?.signal,
@@ -779,14 +773,17 @@ export class RepositoryToolService implements AgentToolExecutor {
       subagentId: this.#contextSubagent(context),
     });
     if (!check.passed) throw new Error(`Patch check failed: ${check.output}`);
-    const applied = await this.#executeProcess(["git", "apply", "--recount", "--whitespace=nowarn", "-"], {
-      input: patchText,
-      skipPolicyValidation: true,
-      signal: context?.signal,
-      taskId: context?.taskId,
-      subagentId: this.#contextSubagent(context),
-    });
-    if (!applied.passed) throw new Error(`Patch application failed: ${applied.output}`);
+    await this.#checkpoints.runWrite(paths, "apply_patch", async () => {
+      for (const file of paths) await this.#resolvePath(file, { forWrite: true });
+      const applied = await this.#executeProcess(["git", "-c", "core.autocrlf=false", "-c", "core.safecrlf=false", "apply", "--recount", "--whitespace=nowarn", "-"], {
+        input: patchText,
+        skipPolicyValidation: true,
+        signal: context?.signal,
+        taskId: context?.taskId,
+        subagentId: this.#contextSubagent(context),
+      });
+      if (!applied.passed) throw new Error(`Patch application failed: ${applied.output}`);
+    }, projection.afterContents, projection.beforeHashes);
 
     const results: FileWriteResult[] = [];
     for (const file of paths) {
@@ -906,6 +903,7 @@ export class RepositoryToolService implements AgentToolExecutor {
     this.#emit("command.started", {
       commandId,
       taskId: options.taskId,
+      toolCallId: options.toolCallId,
       command: displayCommand,
       cwd: cwdResolved.absolute,
     });
@@ -1026,6 +1024,7 @@ export class RepositoryToolService implements AgentToolExecutor {
     args: Record<string, unknown>,
     task: SubagentTask,
     signal: AbortSignal,
+    execution?: { callId: string },
   ): Promise<AgentToolResult> {
     const context: ToolExecutionContext = {
       fileScope: task.fileScope,
@@ -1033,138 +1032,158 @@ export class RepositoryToolService implements AgentToolExecutor {
       taskId: task.id,
       signal,
     };
-    this.#emitTool(name, args, context);
-    try {
-      assertNotAborted(signal);
-      switch (name) {
-        case "read_file": {
-          const result = await this.readFile(requiredString(args, "path"), optionalNumber(args, "maxChars"));
-          return { ok: true, output: result.content, metadata: { path: result.path, size: result.size, truncated: result.truncated } };
+    const callId = execution?.callId ?? randomUUID();
+    if (!execution) this.#emitTool(name, args, context, callId);
+    const run = async (): Promise<AgentToolResult> => {
+      try {
+        assertNotAborted(signal);
+        switch (name) {
+          case "read_file": {
+            const result = await this.readFile(requiredString(args, "path"), optionalNumber(args, "maxChars"));
+            return { ok: true, output: result.content, metadata: { path: result.path, size: result.size, truncated: result.truncated } };
+          }
+          case "list_directory": {
+            const result = await this.listDirectory(typeof args.path === "string" ? args.path : ".");
+            return { ok: true, output: JSON.stringify(result, null, 2) };
+          }
+          case "search_text": {
+            const result = await this.searchText(requiredString(args, "query"), {
+              paths: Array.isArray(args.paths) ? args.paths.filter((entry): entry is string => typeof entry === "string") : undefined,
+              caseSensitive: args.caseSensitive === true,
+              regex: args.regex === true,
+              maxResults: optionalNumber(args, "maxResults"),
+            });
+            return { ok: true, output: JSON.stringify(result, null, 2), metadata: { matches: result.length } };
+          }
+          case "search_symbols": {
+            const result = await this.searchSymbols(requiredString(args, "query"), {
+              paths: Array.isArray(args.paths) ? args.paths.filter((entry): entry is string => typeof entry === "string") : undefined,
+              caseSensitive: args.caseSensitive === true,
+              maxResults: optionalNumber(args, "maxResults"),
+            });
+            return { ok: true, output: JSON.stringify(result, null, 2), metadata: { matches: result.length } };
+          }
+          case "create_file": {
+            const result = await this.createFile(
+              requiredString(args, "path"),
+              requiredString(args, "content"),
+              context,
+            );
+            return {
+              ok: true,
+              output: `created ${result.path}`,
+              metadata: {
+                path: result.path,
+                operation: result.operation,
+                bytes: result.bytes,
+              },
+            };
+          }
+          case "write_file": {
+            const result = await this.writeFile(requiredString(args, "path"), requiredString(args, "content"), context);
+            return {
+              ok: true,
+              output: `${result.operation} ${result.path}`,
+              metadata: { path: result.path, operation: result.operation, bytes: result.bytes },
+            };
+          }
+          case "edit_file": {
+            const result = await this.editFile(
+              requiredString(args, "path"),
+              requiredString(args, "search"),
+              typeof args.replacement === "string" ? args.replacement : "",
+              args.replaceAll === true,
+              context,
+            );
+            return {
+              ok: true,
+              output: `modified ${result.path}`,
+              metadata: { path: result.path, operation: result.operation, bytes: result.bytes },
+            };
+          }
+          case "apply_patch": {
+            const result = await this.applyPatch(requiredString(args, "patch"), context);
+            const filesChanged = result.map((entry) => entry.path);
+            return {
+              ok: true,
+              output: JSON.stringify(result, null, 2),
+              metadata: { files: filesChanged, filesChanged },
+            };
+          }
+          case "inspect_diff": {
+            const result = await this.inspectDiff({ signal, taskId: task.id, subagentId: task.id, toolCallId: callId });
+            return {
+              ok: result.passed,
+              output: result.output,
+              metadata: {
+                commandId: result.commandId,
+                logPath: result.logPath,
+                filesChanged: result.filesChanged ?? [],
+              },
+            };
+          }
+          case "run_command":
+          case "run_test": {
+            const rawCommand = args.command;
+            if (typeof rawCommand !== "string" && !Array.isArray(rawCommand)) throw new Error("command must be a string or string array.");
+            const command = typeof rawCommand === "string"
+              ? rawCommand
+              : rawCommand.filter((entry): entry is string => typeof entry === "string");
+            const result = name === "run_test"
+              ? await this.runTestCommand(command, {
+                  cwd: typeof args.cwd === "string" ? args.cwd : undefined,
+                  timeoutMs: optionalNumber(args, "timeoutMs"),
+                  signal,
+                  taskId: task.id,
+                  subagentId: task.id,
+                  toolCallId: callId,
+                })
+              : await this.runCommand(command, {
+                  cwd: typeof args.cwd === "string" ? args.cwd : undefined,
+                  timeoutMs: optionalNumber(args, "timeoutMs"),
+                  signal,
+                  taskId: task.id,
+                  subagentId: task.id,
+                  toolCallId: callId,
+                });
+            return {
+              ok: result.passed,
+              output: result.output || `Command exited with ${String(result.exitCode)}.`,
+              metadata: {
+                commandId: result.commandId,
+                exitCode: result.exitCode,
+                timedOut: result.timedOut,
+                cancelled: result.cancelled,
+                truncated: result.truncated,
+                logPath: result.logPath,
+              },
+            };
+          }
+          case "read_command_output": {
+            const result = await this.readCommandOutput(requiredString(args, "commandId"), optionalNumber(args, "maxChars"));
+            return { ok: true, output: result.content, metadata: { truncated: result.truncated, size: result.size } };
+          }
+          default:
+            return { ok: false, output: `Unsupported repository tool: ${name}` };
         }
-        case "list_directory": {
-          const result = await this.listDirectory(typeof args.path === "string" ? args.path : ".");
-          return { ok: true, output: JSON.stringify(result, null, 2) };
-        }
-        case "search_text": {
-          const result = await this.searchText(requiredString(args, "query"), {
-            paths: Array.isArray(args.paths) ? args.paths.filter((entry): entry is string => typeof entry === "string") : undefined,
-            caseSensitive: args.caseSensitive === true,
-            regex: args.regex === true,
-            maxResults: optionalNumber(args, "maxResults"),
-          });
-          return { ok: true, output: JSON.stringify(result, null, 2), metadata: { matches: result.length } };
-        }
-        case "search_symbols": {
-          const result = await this.searchSymbols(requiredString(args, "query"), {
-            paths: Array.isArray(args.paths) ? args.paths.filter((entry): entry is string => typeof entry === "string") : undefined,
-            caseSensitive: args.caseSensitive === true,
-            maxResults: optionalNumber(args, "maxResults"),
-          });
-          return { ok: true, output: JSON.stringify(result, null, 2), metadata: { matches: result.length } };
-        }
-        case "create_file": {
-          const result = await this.createFile(
-            requiredString(args, "path"),
-            requiredString(args, "content"),
-            context,
-          );
-          return {
-            ok: true,
-            output: `created ${result.path}`,
-            metadata: {
-              path: result.path,
-              operation: result.operation,
-              bytes: result.bytes,
-            },
-          };
-        }
-        case "write_file": {
-          const result = await this.writeFile(requiredString(args, "path"), requiredString(args, "content"), context);
-          return {
-            ok: true,
-            output: `${result.operation} ${result.path}`,
-            metadata: { path: result.path, operation: result.operation, bytes: result.bytes },
-          };
-        }
-        case "edit_file": {
-          const result = await this.editFile(
-            requiredString(args, "path"),
-            requiredString(args, "search"),
-            typeof args.replacement === "string" ? args.replacement : "",
-            args.replaceAll === true,
-            context,
-          );
-          return {
-            ok: true,
-            output: `modified ${result.path}`,
-            metadata: { path: result.path, operation: result.operation, bytes: result.bytes },
-          };
-        }
-        case "apply_patch": {
-          const result = await this.applyPatch(requiredString(args, "patch"), context);
-          const filesChanged = result.map((entry) => entry.path);
-          return {
-            ok: true,
-            output: JSON.stringify(result, null, 2),
-            metadata: { files: filesChanged, filesChanged },
-          };
-        }
-        case "inspect_diff": {
-          const result = await this.inspectDiff({ signal, taskId: task.id, subagentId: task.id });
-          return {
-            ok: result.passed,
-            output: result.output,
-            metadata: {
-              commandId: result.commandId,
-              logPath: result.logPath,
-              filesChanged: result.filesChanged ?? [],
-            },
-          };
-        }
-        case "run_command":
-        case "run_test": {
-          const rawCommand = args.command;
-          if (typeof rawCommand !== "string" && !Array.isArray(rawCommand)) throw new Error("command must be a string or string array.");
-          const command = typeof rawCommand === "string"
-            ? rawCommand
-            : rawCommand.filter((entry): entry is string => typeof entry === "string");
-          const result = name === "run_test"
-            ? await this.runTestCommand(command, {
-                cwd: typeof args.cwd === "string" ? args.cwd : undefined,
-                timeoutMs: optionalNumber(args, "timeoutMs"),
-                signal,
-                taskId: task.id,
-                subagentId: task.id,
-              })
-            : await this.runCommand(command, {
-                cwd: typeof args.cwd === "string" ? args.cwd : undefined,
-                timeoutMs: optionalNumber(args, "timeoutMs"),
-                signal,
-                taskId: task.id,
-                subagentId: task.id,
-              });
-          return {
-            ok: result.passed,
-            output: result.output || `Command exited with ${String(result.exitCode)}.`,
-            metadata: {
-              commandId: result.commandId,
-              exitCode: result.exitCode,
-              timedOut: result.timedOut,
-              cancelled: result.cancelled,
-              truncated: result.truncated,
-              logPath: result.logPath,
-            },
-          };
-        }
-        case "read_command_output": {
-          const result = await this.readCommandOutput(requiredString(args, "commandId"), optionalNumber(args, "maxChars"));
-          return { ok: true, output: result.content, metadata: { truncated: result.truncated, size: result.size } };
-        }
+      } catch (error) {
+        const message = redactToolText(error instanceof Error ? error.message : String(error));
+        return { ok: false, output: message };
       }
-    } catch (error) {
-      const message = redactToolText(error instanceof Error ? error.message : String(error));
-      return { ok: false, output: message };
+    };
+    const result = await run();
+    if (!execution) {
+      this.#emit("subagent.tool_result", {
+        subagentId: task.id,
+        callId,
+        tool: name,
+        ok: result.ok,
+        output: redactStreamingText(redactToolText(result.output)).slice(0, 16_000),
+        cancelled: signal.aborted || result.metadata?.cancelled === true,
+        ...(typeof result.metadata?.commandId === "string" ? { commandId: result.metadata.commandId } : {}),
+      });
     }
+    return result;
   }
 }
 

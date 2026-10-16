@@ -7,6 +7,12 @@ const execFileAsync = promisify(execFile);
 const BRANCH_PREFIX = 'hive-coder/';
 const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
+export interface CreatedManagedWorktree {
+  path: string;
+  identity: { dev: bigint; ino: bigint };
+  shareDependencies(): Promise<void>;
+}
+
 export function validateTaskId(taskId: string): void {
   if (!TASK_ID_PATTERN.test(taskId)) {
     throw new Error('Invalid taskId: use 1-64 letters, numbers, dot, underscore, or dash characters.');
@@ -77,6 +83,56 @@ export class WorktreeManager {
 
     await this.shareNodeDependencies(worktreePath);
     return worktreePath;
+  }
+
+  /** Forks require atomic new-branch creation; an existing path or branch is never adopted. */
+  public async createWorktreeFromExclusive(taskId: string, baseCommit: string, signal?: AbortSignal): Promise<CreatedManagedWorktree> {
+    const branchName = branchNameForTask(taskId);
+    const worktreePath = this.getWorktreePath(taskId);
+    if (!/^[a-f0-9]{40,64}$/i.test(baseCommit)) throw new Error('Exclusive worktree creation requires an exact commit SHA.');
+    const existing = await fs.lstat(worktreePath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (existing) throw new Error('Exclusive worktree path already exists; it will not be adopted.');
+    // `-b` is the atomic branch reservation. A racing branch creator makes Git fail.
+    try {
+      await execFileAsync(this.gitExecutable, ['-c', 'core.hooksPath=/dev/null', 'worktree', 'add', '--no-checkout', '-b', branchName, worktreePath, baseCommit], { cwd: this.repoPath, signal, timeout: 30_000 });
+    } catch (error) {
+      // A Git failure can reject after registration. A nonzero
+      // exit does not prove ownership: a racing creator may own the same ref.
+      const [partial, branches] = await Promise.all([
+        fs.lstat(worktreePath).catch((failure: NodeJS.ErrnoException) => {
+          if (failure.code === 'ENOENT') return null;
+          throw failure;
+        }),
+        execFileAsync(this.gitExecutable, ['for-each-ref', '--format=%(refname)', `refs/heads/${branchName}`], { cwd: this.repoPath, timeout: 10_000 }),
+      ]);
+      if (partial || branches.stdout.trim()) {
+        throw new Error(`${error instanceof Error ? error.message : String(error)} Exclusive creation did not complete. Preserved possible partial or concurrently created state; inspect ${worktreePath} and branch ${branchName} before retrying.`, { cause: error });
+      }
+      throw error;
+    }
+    try {
+      const created = await fs.lstat(worktreePath, { bigint: true });
+      if (!created.isDirectory() || created.isSymbolicLink() || path.relative(worktreePath, await fs.realpath(worktreePath)) !== '') throw new Error('New worktree directory identity is invalid.');
+      const identity = { dev: created.dev, ino: created.ino };
+      const assertIdentity = async (): Promise<void> => {
+        const current = await fs.lstat(worktreePath, { bigint: true });
+        if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== identity.dev || current.ino !== identity.ino || path.relative(worktreePath, await fs.realpath(worktreePath)) !== '') throw new Error('New worktree directory was replaced during initialization.');
+      };
+      return { path: worktreePath, identity, shareDependencies: async () => {
+        await assertIdentity();
+        if (signal?.aborted) throw new DOMException('Coding session fork cancelled.', 'AbortError');
+        let ignored = false;
+        try { await execFileAsync(this.gitExecutable, ['check-ignore', '--quiet', '--', 'node_modules/'], { cwd: worktreePath, signal, timeout: 10_000 }); ignored = true; }
+        catch (error) { if (!(error instanceof Error && 'code' in error && error.code === 1)) throw error; }
+        if (ignored) await this.shareNodeDependencies(worktreePath);
+        await assertIdentity();
+      } };
+    } catch (error) {
+      throw new Error(`Exclusive worktree identity could not be established; preserved ${worktreePath} and ${branchName} for inspection.`, { cause: error });
+    }
   }
 
   private async shareNodeDependencies(worktreePath: string): Promise<void> {
@@ -163,7 +219,7 @@ export class WorktreeManager {
     }
   }
 
-  public async discardWorktree(taskId: string): Promise<void> {
+  public async discardWorktree(taskId: string, options: { disableHooks?: boolean } = {}): Promise<void> {
     const worktreePath = this.getWorktreePath(taskId);
     const branchName = branchNameForTask(taskId);
     if (!isHiveCoderBranch(branchName)) {
@@ -171,15 +227,16 @@ export class WorktreeManager {
     }
     
     // Remove worktree
+    const gitOptions = options.disableHooks ? ['-c', 'core.hooksPath=/dev/null'] : [];
     try {
-      await execFileAsync(this.gitExecutable, ['worktree', 'remove', '--force', worktreePath], { cwd: this.repoPath });
+      await execFileAsync(this.gitExecutable, [...gitOptions, 'worktree', 'remove', '--force', worktreePath], { cwd: this.repoPath });
     } catch {
       // Ignore if worktree doesn't exist
     }
 
     // Delete branch
     try {
-      await execFileAsync(this.gitExecutable, ['branch', '-D', branchName], { cwd: this.repoPath });
+      await execFileAsync(this.gitExecutable, [...gitOptions, 'branch', '-D', branchName], { cwd: this.repoPath });
     } catch {
       // Ignore if branch doesn't exist
     }

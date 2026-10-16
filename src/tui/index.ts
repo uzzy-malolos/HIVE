@@ -5,6 +5,7 @@
  */
 
 import { TuiApp } from "./app.js";
+import type { HiveMode } from "../config.js";
 
 export {
   aggregateSubagentCounts,
@@ -25,8 +26,17 @@ export {
   withSelectedSubagent,
   withSubagentsExpanded,
 } from "./state.js";
+export {
+  cycleSessionMode,
+  decidePermission,
+  describeMode,
+  nextInterrupt,
+  playTurn,
+  resolveSessionPosture,
+  runtimePostureForMode,
+} from "./interaction.js";
 
-export async function startHiveTui(cwd: string): Promise<void> {
+export async function startHiveTui(cwd: string, options: { initialCommands?: string[]; initialMode?: HiveMode } = {}): Promise<void> {
   // Guard: must be an interactive TTY
   if (!process.stdout.isTTY || !process.stdin.isTTY) {
     process.stderr.write(
@@ -52,6 +62,6 @@ export async function startHiveTui(cwd: string): Promise<void> {
     return;
   }
 
-  const app = new TuiApp(cwd);
+  const app = new TuiApp(cwd, options);
   await app.start();
 }

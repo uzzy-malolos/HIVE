@@ -1,5 +1,6 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import type { CodingFinalReport, RuntimeEvent } from "../../../../../src/coding/types";
 import { CodexSurface } from "./CodexSurface";
 import { initialDesktopState } from "../../state";
 
@@ -85,10 +86,13 @@ describe("CodexSurface", () => {
     expect(screen.getByRole("button", { name: /standard/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /autonomous/i })).toBeInTheDocument();
 
-    // Agent Activity Stepper
+    // Agent activity is present, but idle until runtime events arrive.
+    expect(screen.getByRole("log", { name: "Agent activity" })).toBeInTheDocument();
     expect(screen.getByText("Scout")).toBeInTheDocument();
     expect(screen.getByText("Planner")).toBeInTheDocument();
     expect(screen.getByText("Builder")).toBeInTheDocument();
+    expect(screen.getAllByText("not started").length).toBeGreaterThanOrEqual(5);
+    expect(screen.queryByText(/indexed repository/i)).not.toBeInTheDocument();
 
     // Transcript messages
     expect(screen.getByText("Implement file preview in Codex")).toBeInTheDocument();
@@ -103,5 +107,61 @@ describe("CodexSurface", () => {
     expect(screen.getByRole("tab", { name: /terminal/i })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /evidence/i })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /run/i })).toBeInTheDocument();
+  });
+
+  it("reads the session report and runtime events instead of placeholder harness state", () => {
+    const send = vi.fn().mockResolvedValue({ type: "request.completed", timestamp: new Date().toISOString() });
+    const state = initialDesktopState();
+    state.repositoryRoot = "C:\\Dev\\hive-desktop";
+    state.selectedSessionId = "ses-1";
+    state.threads = [{
+      schemaVersion: 1,
+      id: "th-1",
+      title: "Implement file preview",
+      createdAt: "2026-08-17T00:00:00.000Z",
+      updatedAt: "2026-08-17T00:00:00.000Z",
+      archived: false,
+      messages: [],
+      runs: [{
+        userMessageId: "m1",
+        codingSessionId: "ses-1",
+        status: "running",
+        createdAt: "2026-08-17T00:00:00.000Z",
+        updatedAt: "2026-08-17T00:00:00.000Z",
+      }],
+    }];
+    state.activeThreadId = "th-1";
+    state.runtimeEvents = [{
+      schemaVersion: 1,
+      id: "e-1",
+      sequence: 1,
+      sessionId: "ses-1",
+      timestamp: "2026-08-17T00:00:02.000Z",
+      type: "plan.created",
+      payload: { summary: "Ship the preview", taskIds: ["bee-1"] },
+    } as RuntimeEvent];
+    state.reports["ses-1"] = {
+      result: "needs repair",
+      verdict: "REJECTED",
+      subagents: {
+        total: 1, active: 0, working: 0, waiting: 0, blocked: 0, done: 0, completed: 0, failed: 1, cancelled: 0, skipped: 0,
+      },
+      filesChanged: [],
+      validation: [{ label: "npm test", status: "failed" }],
+      review: [],
+      outstanding: ["npm test"],
+      completedAt: "2026-08-17T00:00:08.000Z",
+    } satisfies CodingFinalReport;
+
+    render(<CodexSurface state={state} send={send} />);
+
+    expect(screen.getByLabelText("Planner: Ship the preview")).toBeInTheDocument();
+    expect(screen.queryByText(/indexed repository/i)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: /evidence/i }));
+    expect(screen.getByText("REJECTED")).toBeInTheDocument();
+    expect(screen.getByText("npm test")).toBeInTheDocument();
+    expect(screen.queryByText(/112/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/GATE PASSED/i)).not.toBeInTheDocument();
   });
 });
