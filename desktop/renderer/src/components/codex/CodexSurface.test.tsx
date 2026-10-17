@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { CodingFinalReport, RuntimeEvent } from "../../../../../src/coding/types";
 import { CodexSurface } from "./CodexSurface";
@@ -163,5 +163,49 @@ describe("CodexSurface", () => {
     expect(screen.getByText("npm test")).toBeInTheDocument();
     expect(screen.queryByText(/112/)).not.toBeInTheDocument();
     expect(screen.queryByText(/GATE PASSED/i)).not.toBeInTheDocument();
+  });
+
+  it("creates the task from its first message, then starts the run in it", async () => {
+    const thread = { schemaVersion: 1 as const, id: "th-new", title: "Fix the build", createdAt: "2026-08-17T00:00:00.000Z", updatedAt: "2026-08-17T00:00:00.000Z", archived: false, messages: [], runs: [] };
+    const send = vi.fn().mockResolvedValue({ type: "thread.changed", timestamp: "2026-08-17T00:00:00.000Z", thread });
+    const state = initialDesktopState();
+    state.repositoryRoot = "C:\\Dev\\hive";
+
+    render(<CodexSurface state={state} send={send} />);
+    fireEvent.change(screen.getByLabelText("Message HIVE"), { target: { value: "Fix the build" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send task" }));
+
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(3));
+    expect(send.mock.calls.map(([command]) => command.type)).toEqual(["thread.create", "thread.message.append", "run.start"]);
+    expect(send.mock.calls[0][0].input).toEqual({ title: "Fix the build" });
+    expect(send.mock.calls[2][0].input.threadId).toBe("th-new");
+  });
+
+  it("offers pause and cancel while a run is live, and resume once it is paused", () => {
+    const send = vi.fn();
+    const onRunAction = vi.fn().mockResolvedValue(undefined);
+    const state = initialDesktopState();
+    state.repositoryRoot = "C:\\Dev\\hive";
+    state.activeThreadId = "th-1";
+    state.threads = [{
+      schemaVersion: 1, id: "th-1", title: "Hold", createdAt: "2026-08-17T00:00:00.000Z", updatedAt: "2026-08-17T00:00:00.000Z", archived: false, messages: [],
+      runs: [{ userMessageId: "m1", codingSessionId: "ses-1", status: "planning", createdAt: "2026-08-17T00:00:00.000Z", updatedAt: "2026-08-17T00:00:00.000Z" }],
+    }];
+
+    const { rerender } = render(<CodexSurface state={state} send={send} onRunAction={onRunAction} />);
+    const controls = screen.getByRole("group", { name: "Run controls" });
+    fireEvent.click(within(controls).getByRole("button", { name: "Pause" }));
+    fireEvent.click(within(controls).getByRole("button", { name: "Cancel" }));
+    expect(onRunAction.mock.calls).toEqual([["pause"], ["cancel"]]);
+
+    state.threads[0].runs[0].status = "paused";
+    rerender(<CodexSurface state={{ ...state }} send={send} onRunAction={onRunAction} />);
+    expect(screen.queryByRole("button", { name: "Pause" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    expect(onRunAction).toHaveBeenLastCalledWith("resume");
+
+    state.threads[0].runs[0].status = "completed";
+    rerender(<CodexSurface state={{ ...state }} send={send} onRunAction={onRunAction} />);
+    expect(screen.queryByRole("group", { name: "Run controls" })).not.toBeInTheDocument();
   });
 });

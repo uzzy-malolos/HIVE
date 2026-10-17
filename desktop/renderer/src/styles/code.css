@@ -97,6 +97,34 @@
   font-weight: 500;
 }
 
+.hive-run-controls,
+.hive-git-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.hive-run-controls {
+  margin-left: auto;
+}
+
+.hive-git-actions {
+  flex-wrap: wrap;
+}
+
+.hive-run-controls .hive-posture-btn,
+.hive-git-actions .hive-posture-btn {
+  border: 1px solid var(--hive-border-subtle);
+}
+
+.hive-posture-btn.is-danger {
+  color: var(--hive-error);
+}
+
+.hive-posture-btn.is-danger:hover {
+  background: var(--hive-error-dim);
+}
+
 /* Agent Turn Stream */
 .hive-code-stream {
   display: flex;

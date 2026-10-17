@@ -5,8 +5,16 @@ import { ChangesView } from "../ChangesView";
 import { FileTree } from "../FileTree";
 import { TerminalOutput } from "../TerminalOutput";
 import { EvidencePanel } from "./EvidencePanel";
+import { terminalStatuses } from "../../utils";
 
 export type InspectorTab = "changes" | "files" | "terminal" | "evidence" | "run";
+
+const GIT_ACTIONS = [
+  { action: "commit", label: "commit" },
+  { action: "push", label: "push" },
+  { action: "pull-request", label: "PR" },
+  { action: "discard", label: "discard" },
+] as const;
 
 export interface InspectorTabsProps {
   state: DesktopViewState;
@@ -26,8 +34,14 @@ export function InspectorTabs({
   defaultTab = "changes",
   onSelectFile,
   onToggleDir,
+  onPreviewGit,
+  onSelectTab,
 }: InspectorTabsProps) {
-  const [tab, setTab] = useState<InspectorTab>(defaultTab);
+  const [tab, setTabState] = useState<InspectorTab>(defaultTab);
+  const setTab = (next: InspectorTab): void => {
+    setTabState(next);
+    onSelectTab?.(next);
+  };
   const [expandedReview, setExpandedReview] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
@@ -39,6 +53,8 @@ export function InspectorTabs({
   const changedFilesCount = diff?.recordedFiles?.length || 0;
   const sessionLabel = activeRun?.codingSessionId ?? sessionId ?? "—";
   const repositoryLabel = repositoryName(repositoryRoot);
+  // Guarded Git actions apply to a settled run's worktree; each opens a one-use confirmation.
+  const gitActionsAvailable = Boolean(onPreviewGit && activeRun && terminalStatuses.has(activeRun.status));
 
   return (
     <aside className={`hive-inspector ${expandedReview ? "is-expanded" : ""}`} aria-label="Harness Inspector">
@@ -104,6 +120,20 @@ export function InspectorTabs({
         {/* Tab 1: Changes */}
         {tab === "changes" && (
           <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+            {gitActionsAvailable && (
+              <div className="hive-git-actions" role="group" aria-label="Guarded Git actions">
+                {GIT_ACTIONS.map(({ action, label }) => (
+                  <button
+                    key={action}
+                    type="button"
+                    className={`hive-posture-btn${action === "discard" ? " is-danger" : ""}`}
+                    onClick={() => onPreviewGit?.(action)}
+                  >
+                    Preview {label}
+                  </button>
+                ))}
+              </div>
+            )}
             {diff && diff.patch ? (
               <ChangesView
                 patch={diff.patch}

@@ -2,9 +2,9 @@ import React, { useState, useRef, useEffect } from "react";
 import type { DesktopViewState } from "../../state";
 import type { DesktopCommandInput } from "../../bridge";
 import type { DesktopEvent, ThreadMessage } from "../../../../../src/desktop/types";
-import { identifier, preferredScrollBehavior } from "../../utils";
+import { identifier, preferredScrollBehavior, terminalStatuses } from "../../utils";
 import { renderMarkdown } from "../../markdown";
-import { InspectorTabs } from "../inspector/InspectorTabs";
+import { InspectorTabs, type InspectorTab } from "../inspector/InspectorTabs";
 import { AgentActivity } from "./AgentActivity";
 
 export interface CodexSurfaceProps {
@@ -19,6 +19,8 @@ export interface CodexSurfaceProps {
   onPreviewGit?: (action: "commit" | "discard" | "push" | "pull-request") => void;
   onLoadThread?: (threadId: string) => Promise<void>;
   onRewindCheckpoint?: () => Promise<void>;
+  onRunAction?: (action: "pause" | "resume" | "cancel") => Promise<void>;
+  onSelectInspectorTab?: (tab: InspectorTab) => void;
   hideInspector?: boolean;
   defaultInspectorTab?: "changes" | "files" | "terminal" | "evidence" | "run";
 }
@@ -35,6 +37,8 @@ export function CodexSurface({
   onSelectFile,
   onToggleDir,
   onPreviewGit,
+  onRunAction,
+  onSelectInspectorTab,
   hideInspector = false,
   defaultInspectorTab = "changes",
 }: CodexSurfaceProps) {
@@ -49,6 +53,8 @@ export function CodexSurface({
   const latestRun = activeThread?.runs[activeThread.runs.length - 1];
   const codingSessionId = selectedSessionId ?? run?.codingSessionId ?? latestRun?.codingSessionId ?? null;
   const activeReport = codingSessionId ? reports[codingSessionId] ?? null : null;
+  const runStatus = run?.status ?? latestRun?.status ?? null;
+  const runLive = runStatus !== null && !terminalStatuses.has(runStatus);
 
   useEffect(() => {
     try {
@@ -65,37 +71,44 @@ export function CodexSurface({
     if (!inputTask.trim()) return;
     const task = inputTask.trim();
 
-    if (activeThreadId && repositoryRoot) {
-      const message: ThreadMessage = {
-        id: identifier("message"),
-        role: "user",
-        content: task,
-        createdAt: new Date().toISOString(),
-      };
-      const res = await send({
-        type: "thread.message.append",
-        input: {
-          threadId: activeThreadId,
-          message,
-        },
-      });
-      if (res.type === "request.failed") {
-        return;
-      }
-      setInputTask("");
-      await send({
-        type: "run.start",
-        input: {
-          threadId: activeThreadId,
-          repositoryRoot,
-          currentUserMessageId: message.id,
-          options: {
-            mode: composerMode === "plan" ? "plan" : "auto",
-            approvalPolicy: posture === "ask" ? "always" : posture === "autonomous" ? "safe" : "changes",
-          },
-        },
-      });
+    if (!repositoryRoot) return;
+    let threadId = activeThreadId;
+    if (!threadId) {
+      // The first message of a Hive Code task creates the task, titled after it.
+      const created = await send({ type: "thread.create", input: { title: task.replace(/\s+/g, " ").slice(0, 80) } });
+      if (created.type !== "thread.changed") return;
+      threadId = created.thread.id;
     }
+
+    const message: ThreadMessage = {
+      id: identifier("message"),
+      role: "user",
+      content: task,
+      createdAt: new Date().toISOString(),
+    };
+    const res = await send({
+      type: "thread.message.append",
+      input: {
+        threadId,
+        message,
+      },
+    });
+    if (res.type === "request.failed") {
+      return;
+    }
+    setInputTask("");
+    await send({
+      type: "run.start",
+      input: {
+        threadId,
+        repositoryRoot,
+        currentUserMessageId: message.id,
+        options: {
+          mode: composerMode === "plan" ? "plan" : "auto",
+          approvalPolicy: posture === "ask" ? "always" : posture === "autonomous" ? "safe" : "changes",
+        },
+      },
+    });
   };
 
   const displayModel = activeModelName || "deepseek / deepseek-coder";
@@ -109,6 +122,17 @@ export function CodexSurface({
             <div className="hive-mission-dot" />
             <span className="hive-mission-title">{missionTitle}</span>
           </div>
+
+          {onRunAction && runLive && (
+            <div className="hive-run-controls" role="group" aria-label="Run controls">
+              {runStatus === "paused" ? (
+                <button type="button" className="hive-posture-btn" onClick={() => void onRunAction("resume")}>Resume</button>
+              ) : (
+                <button type="button" className="hive-posture-btn" disabled={state.pausingSessionId === codingSessionId} onClick={() => void onRunAction("pause")}>Pause</button>
+              )}
+              <button type="button" className="hive-posture-btn" onClick={() => void onRunAction("cancel")}>Cancel</button>
+            </div>
+          )}
 
           <div className="hive-posture-selector" role="group" aria-label="Safety Posture">
             <button
@@ -141,7 +165,7 @@ export function CodexSurface({
         <div className="hive-code-stream">
           <AgentActivity
             events={runtimeEvents}
-            runStatus={run?.status ?? latestRun?.status ?? null}
+            runStatus={runStatus}
             sessionId={selectedSessionId}
           />
 
@@ -233,6 +257,7 @@ export function CodexSurface({
           onSelectFile={onSelectFile}
           onToggleDir={onToggleDir}
           onPreviewGit={onPreviewGit}
+          onSelectTab={onSelectInspectorTab}
         />
       )}
     </div>

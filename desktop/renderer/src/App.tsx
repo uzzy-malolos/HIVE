@@ -11,6 +11,7 @@ import { SettingsSurface } from "./components/settings/SettingsSurface";
 import { UsageSurface } from "./components/usage/UsageSurface";
 import { SplitWorkspace } from "./components/SplitWorkspace";
 import { CodexSurface } from "./components/codex/CodexSurface";
+import type { InspectorTab } from "./components/inspector/InspectorTabs";
 import { ShortcutHelp } from "./components/ShortcutHelp";
 import { Toast, ToastItem } from "./components/Toast";
 import { ChatSurface } from "./components/chat/ChatSurface";
@@ -446,6 +447,13 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
     if (tab === "report") await send({ type: "run.report", input: { repositoryRoot: state.repositoryRoot, threadId: activeThread.id, codingSessionId: sessionId } });
   }
 
+  // The Hive Code inspector loads a run's diff and report when their tabs are opened.
+  async function loadInspectorTab(tab: InspectorTab): Promise<void> {
+    if (!state.repositoryRoot || !activeThread || !sessionId) return;
+    if (tab === "changes") await send({ type: "changes.diff", input: { repositoryRoot: state.repositoryRoot, codingSessionId: sessionId } });
+    if (tab === "evidence") await send({ type: "run.report", input: { repositoryRoot: state.repositoryRoot, threadId: activeThread.id, codingSessionId: sessionId } });
+  }
+
   async function runAction(type: "pause" | "resume" | "cancel"): Promise<void> {
     if (!state.repositoryRoot || !activeThread || !currentRun) return;
     if (type === "pause") await send({ type: "run.pause", input: { repositoryRoot: state.repositoryRoot, threadId: activeThread.id, codingSessionId: currentRun.codingSessionId } });
@@ -841,6 +849,8 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
               await send({ type: "workspace.list", input: { repositoryRoot: state.repositoryRoot, path: dirPath } });
             }}
             onPreviewGit={previewGit}
+            onRunAction={runAction}
+            onSelectInspectorTab={(tab) => void loadInspectorTab(tab)}
             onLoadThread={async (threadId) => {
               const t = state.threads.find((entry) => entry.id === threadId);
               if (t) void loadThread(t);
