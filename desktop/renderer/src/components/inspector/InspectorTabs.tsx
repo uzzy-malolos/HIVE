@@ -5,6 +5,7 @@ import { ChangesView } from "../ChangesView";
 import { FileTree } from "../FileTree";
 import { TerminalOutput } from "../TerminalOutput";
 import { EvidencePanel } from "./EvidencePanel";
+import { commitBlockedCopy, terminalStatuses } from "../../utils";
 
 export type InspectorTab = "changes" | "files" | "terminal" | "evidence" | "run";
 
@@ -26,6 +27,7 @@ export function InspectorTabs({
   defaultTab = "changes",
   onSelectFile,
   onToggleDir,
+  onPreviewGit,
 }: InspectorTabsProps) {
   const [tab, setTab] = useState<InspectorTab>(defaultTab);
   const [expandedReview, setExpandedReview] = useState(false);
@@ -39,6 +41,11 @@ export function InspectorTabs({
   const changedFilesCount = diff?.recordedFiles?.length || 0;
   const sessionLabel = activeRun?.codingSessionId ?? sessionId ?? "—";
   const repositoryLabel = repositoryName(repositoryRoot);
+  // Guarded Git actions apply to a stopped run's worktree; the backend re-checks everything on confirm.
+  const gitSessionId = activeRun?.codingSessionId ?? sessionId;
+  const canReviewGit = Boolean(onPreviewGit && repositoryRoot && gitSessionId && activeRun && terminalStatuses.has(activeRun.status));
+  const sessionDiff = diff && diff.codingSessionId === gitSessionId ? diff : null;
+  const commitBlocked = sessionDiff ? commitBlockedCopy(sessionDiff.commitEligibility) : "Load this run's changes first.";
 
   return (
     <aside className={`hive-inspector ${expandedReview ? "is-expanded" : ""}`} aria-label="Harness Inspector">
@@ -104,6 +111,15 @@ export function InspectorTabs({
         {/* Tab 1: Changes */}
         {tab === "changes" && (
           <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+            {canReviewGit && onPreviewGit ? (
+              <div className="hive-git-actions" role="group" aria-label="Guarded Git actions">
+                <button type="button" className="hive-btn-secondary" disabled={Boolean(commitBlocked)} title={commitBlocked || "Commit exactly the reviewed files"} onClick={() => onPreviewGit("commit")}>Preview commit</button>
+                <button type="button" className="hive-btn-secondary" onClick={() => onPreviewGit("push")}>Preview push</button>
+                <button type="button" className="hive-btn-secondary" onClick={() => onPreviewGit("pull-request")}>Preview PR</button>
+                <button type="button" className="hive-btn-secondary hive-git-discard" onClick={() => onPreviewGit("discard")}>Preview discard</button>
+                {commitBlocked ? <p className="hive-git-note">{commitBlocked}</p> : null}
+              </div>
+            ) : null}
             {diff && diff.patch ? (
               <ChangesView
                 patch={diff.patch}

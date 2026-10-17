@@ -154,6 +154,14 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
         setToasts((prev) => [...prev, { id: toastId, tone, text: messageText }]);
         notifyRunCompleted("HIVE Cockpit", { threadTitle, status: event.run.status });
 
+        // Load the finished run's evidence and diff so the inspector shows them without a reload.
+        const root = stateRef.current.repositoryRoot;
+        if (root && ownerThread) {
+          const reference = { repositoryRoot: root, threadId: ownerThread.id, codingSessionId: event.run.codingSessionId };
+          void send({ type: "run.report", input: reference });
+          void send({ type: "changes.diff", input: { repositoryRoot: root, codingSessionId: event.run.codingSessionId } });
+        }
+
         setTimeout(() => {
           setToasts((prev) => prev.filter((t) => t.id !== toastId));
         }, 6000);
@@ -482,7 +490,11 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
     const input = { confirmationToken: preview.confirmationToken, proposal: preview.proposal };
     const type = preview.proposal.action === "pull-request" ? "git.pull-request.confirm" : `git.${preview.proposal.action}.confirm`;
     const result = await send({ type, input } as DesktopCommandInput);
-    if (result.type === "request.failed") dispatch({ type: "ui.close-preview" });
+    if (result.type === "request.failed") { dispatch({ type: "ui.close-preview" }); return; }
+    if (!state.repositoryRoot) return;
+    await send({ type: "git.inspect", repositoryRoot: state.repositoryRoot });
+    // A discard removes the worktree, so only a commit leaves a diff to refresh.
+    if (preview.proposal.action === "commit") await send({ type: "changes.diff", input: { repositoryRoot: state.repositoryRoot, codingSessionId: preview.proposal.codingSessionId } });
   }
 
   async function storeCredential(event: FormEvent, kind: DesktopCredentialKind, configuration: DesktopProviderConfigurationInput): Promise<void> {
@@ -803,6 +815,8 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
               const t = state.threads.find((entry) => entry.id === threadId);
               if (t) void loadThread(t);
             }}
+            onNewTask={() => dispatch({ type: "ui.new-task" })}
+            onRunAction={runAction}
             onHandoffToCoder={() => dispatch({ type: "ui.mode", mode: "coder" })}
           />
         ) : state.mode === "settings" ? (
@@ -869,6 +883,8 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
               const t = state.threads.find((entry) => entry.id === threadId);
               if (t) void loadThread(t);
             }}
+            onNewTask={() => dispatch({ type: "ui.new-task" })}
+            onRunAction={runAction}
           />
         )}
       </Shell>

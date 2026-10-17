@@ -325,3 +325,36 @@
   color: #d1d5db;
   overflow-y: auto;
 }
+
+/* Guarded Git actions above the diff */
+.hive-git-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.hive-shell .hive-git-actions button {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.hive-shell .hive-git-actions .hive-git-discard {
+  color: var(--hive-error);
+}
+
+.hive-git-note {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 11px;
+  color: var(--hive-text-dim);
+}
+
+.hive-run-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  margin-right: 8px;
+}

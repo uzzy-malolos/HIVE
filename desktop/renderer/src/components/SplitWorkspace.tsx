@@ -19,6 +19,8 @@ export interface SplitWorkspaceProps {
   onToggleDir?: (dirPath: string) => Promise<void>;
   onPreviewGit?: (action: "commit" | "discard" | "push" | "pull-request") => void;
   onLoadThread?: (threadId: string) => Promise<void>;
+  onNewTask?: () => void;
+  onRunAction?: (action: "pause" | "resume" | "cancel") => Promise<void>;
   onHandoffToCoder?: (threadId?: string) => void;
 }
 
@@ -36,6 +38,8 @@ export function SplitWorkspace({
   onToggleDir,
   onPreviewGit,
   onLoadThread,
+  onNewTask,
+  onRunAction,
   onHandoffToCoder,
 }: SplitWorkspaceProps) {
   const [splitPct, setSplitPct] = useState(46);
@@ -74,6 +78,8 @@ export function SplitWorkspace({
           onToggleDir={onToggleDir}
           onPreviewGit={onPreviewGit}
           onLoadThread={onLoadThread}
+          onNewTask={onNewTask}
+          onRunAction={onRunAction}
           hideInspector={true}
         />
       </div>

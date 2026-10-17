@@ -165,3 +165,57 @@ describe("CodexSurface", () => {
     expect(screen.queryByText(/GATE PASSED/i)).not.toBeInTheDocument();
   });
 });
+
+describe("CodexSurface task lifecycle", () => {
+  const now = "2026-08-17T00:00:00.000Z";
+  const thread = (status?: "running" | "paused" | "completed") => ({
+    schemaVersion: 1 as const, id: "th-run", title: "Fix the build", createdAt: now, updatedAt: now, archived: false,
+    messages: [{ id: "m1", role: "user" as const, content: "Fix the build", createdAt: now }],
+    runs: status ? [{ userMessageId: "m1", codingSessionId: "ses-1", status, createdAt: now, updatedAt: now }] : [],
+  });
+
+  it("starts a new task from the first message when none is selected", async () => {
+    const created = thread();
+    const send = vi.fn(async (command: { type: string }) => {
+      if (command.type === "thread.create") return { type: "thread.changed", timestamp: now, thread: { ...created, title: "Add a health check endpoint" } };
+      if (command.type === "thread.message.append") return { type: "thread.changed", timestamp: now, thread: created };
+      return { type: "request.completed", timestamp: now };
+    });
+    const state = initialDesktopState();
+    state.repositoryRoot = "/work/api";
+    render(<CodexSurface state={state} send={send as never} />);
+    fireEvent.change(screen.getByLabelText("Message HIVE"), { target: { value: "Add a health check endpoint\nwith tests" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send task" }));
+    await vi.waitFor(() => expect(send.mock.calls.map(([command]) => command.type)).toEqual(["thread.create", "thread.message.append", "run.start"]));
+    expect(send.mock.calls[0][0]).toMatchObject({ input: { title: "Add a health check endpoint" } });
+    expect(send.mock.calls[2][0]).toMatchObject({ input: { threadId: created.id, repositoryRoot: "/work/api" } });
+  });
+
+  it("offers pause and cancel while running, resume while paused, and new task once stopped", () => {
+    const onRunAction = vi.fn(async () => {});
+    const onNewTask = vi.fn();
+    const send = vi.fn();
+    const state = initialDesktopState();
+    state.repositoryRoot = "/work/api";
+    state.activeThreadId = "th-run";
+
+    state.threads = [thread("running")];
+    const { rerender } = render(<CodexSurface state={state} send={send} onRunAction={onRunAction} onNewTask={onNewTask} />);
+    const controls = () => screen.getByRole("group", { name: "Run controls" });
+    expect(controls()).toHaveTextContent("PauseCancelNew task");
+    expect(screen.getByRole("button", { name: "New task" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+    expect(onRunAction).toHaveBeenCalledWith("pause");
+
+    rerender(<CodexSurface state={{ ...state, threads: [thread("paused")] }} send={send} onRunAction={onRunAction} onNewTask={onNewTask} />);
+    expect(controls()).toHaveTextContent("ResumeCancelNew task");
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    expect(onRunAction).toHaveBeenLastCalledWith("resume");
+
+    rerender(<CodexSurface state={{ ...state, threads: [thread("completed")] }} send={send} onRunAction={onRunAction} onNewTask={onNewTask} />);
+    expect(controls()).toHaveTextContent("New task");
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    expect(onNewTask).toHaveBeenCalledOnce();
+  });
+});
