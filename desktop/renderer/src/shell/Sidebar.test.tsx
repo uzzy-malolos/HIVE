@@ -47,10 +47,21 @@ describe("Sidebar projects", () => {
     const projects = screen.getByRole("group", { name: "Projects" });
     const rows = within(projects).getAllByRole("button");
     expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual(["api (C:\\work\\api)", "Open project web (C:\\work\\web)"]);
+    // Without onCloseRepository there is no "No project" row.
     expect(rows[0]).toHaveAttribute("aria-current", "true");
     expect(screen.queryByLabelText("Repository path")).not.toBeInTheDocument();
     await user.click(rows[1]);
     expect(props.onOpenRepository).toHaveBeenCalledWith("C:\\work\\web");
+  });
+
+  it("offers No project to leave the open folder", async () => {
+    const user = userEvent.setup();
+    const onCloseRepository = vi.fn(async () => {});
+    renderSidebar({ repositoryPath: "C:\\work\\api", onCloseRepository });
+    const none = screen.getByRole("button", { name: /^No project/ });
+    expect(none).not.toHaveAttribute("aria-current");
+    await user.click(none);
+    expect(onCloseRepository).toHaveBeenCalledOnce();
   });
 
   it("reveals the folder picker and path form from the Projects + button", async () => {
@@ -61,6 +72,11 @@ describe("Sidebar projects", () => {
     expect(screen.getByLabelText("Repository path")).toHaveValue("/home/me/hive");
     await user.click(screen.getByRole("button", { name: /browse for folder/i }));
     expect(onPickRepository).toHaveBeenCalledOnce();
+  });
+
+  it("hides project options when no handlers are given", () => {
+    renderSidebar({ repositoryPath: "C:\\work\\api" });
+    expect(screen.queryByRole("button", { name: "Project options" })).not.toBeInTheDocument();
   });
 
   it("collapses a section from its header", async () => {

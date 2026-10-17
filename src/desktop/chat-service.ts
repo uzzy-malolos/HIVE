@@ -54,6 +54,12 @@ export interface DesktopChatServiceOptions {
   /** Injectable agentic-turn runner for tests; defaults to runChatAgentTurn. */
   runAgentTurn?: (input: ChatAgentTurnInput, hooks: ChatAgentTurnHooks) => Promise<ChatAgentTurnResult>;
   clock?: () => string;
+  /**
+   * Whether the current root is an opened project ("project") or the app-data store for chats
+   * without one ("general"). General chats get no Scout grounding or agentic file tools, since
+   * their root is app data rather than a workspace. Defaults to "project".
+   */
+  scope?: () => "project" | "general";
   /** Chunk coalescing window; streaming chunks batch to keep IPC calm. */
   chunkBatchMs?: number;
   chunkBatchChars?: number;
@@ -127,6 +133,7 @@ export class DesktopChatService {
   readonly #buildGrounding: NonNullable<DesktopChatServiceOptions["buildGrounding"]>;
   readonly #runAgentTurn: NonNullable<DesktopChatServiceOptions["runAgentTurn"]>;
   readonly #clock: () => string;
+  readonly #scope: () => "project" | "general";
   readonly #chunkBatchMs: number;
   readonly #chunkBatchChars: number;
   readonly #stores = new Map<string, ChatSessionStore>();
@@ -143,6 +150,7 @@ export class DesktopChatService {
     this.#buildGrounding = options.buildGrounding ?? ((cwd, taskPrompt) => buildScoutGrounding(cwd, taskPrompt));
     this.#runAgentTurn = options.runAgentTurn ?? ((input, hooks) => runChatAgentTurn(input, hooks));
     this.#clock = options.clock ?? (() => new Date().toISOString());
+    this.#scope = options.scope ?? (() => "project");
     this.#chunkBatchMs = options.chunkBatchMs ?? DEFAULT_CHUNK_BATCH_MS;
     this.#chunkBatchChars = options.chunkBatchChars ?? DEFAULT_CHUNK_BATCH_CHARS;
   }
@@ -163,6 +171,7 @@ export class DesktopChatService {
   }
 
   public async create(input: { role?: string; ground?: boolean }): Promise<DesktopChatConversation> {
+    if (input.ground && this.#scope() === "general") throw new Error("Workspace grounding needs an open project.");
     const root = this.#projectRootProvider();
     const store = this.#store();
     const role: ChatRoleSelection = input.role ? this.#resolveRoleSelection(input.role) : "auto";
@@ -270,6 +279,7 @@ export class DesktopChatService {
     const store = this.#store();
     const record = await this.#loadRecord(input.conversationId);
     if (this.#controllers.has(record.id)) throw new Error("A chat turn is already streaming in this conversation.");
+    if (this.#scope() === "general" && (input.agent || input.ground)) throw new Error("Agentic mode and workspace grounding need an open project.");
 
     const history = record.messages.slice();
     let promptContent = input.content;
@@ -282,7 +292,7 @@ export class DesktopChatService {
       history.push({ role: "user", content: input.content, at: this.#clock() });
     }
 
-    const ground = input.ground ?? record.grounded ?? false;
+    const ground = this.#scope() === "general" ? false : input.ground ?? record.grounded ?? false;
     const selection: ChatRoleSelection = input.role ? this.#resolveRoleSelection(input.role) : record.role;
     const slug = selection === "auto" ? classifyTask(promptContent) : bindingToSlug(selection);
     const override = input.providerId || input.model ? { providerId: input.providerId, model: input.model } : undefined;

@@ -359,6 +359,7 @@ type DesktopCommandBase = { requestId: string };
 export type DesktopCommand =
   | (DesktopCommandBase & { type: "repository.list" })
   | (DesktopCommandBase & { type: "repository.open"; repositoryRoot: string })
+  | (DesktopCommandBase & { type: "repository.close" })
   | (DesktopCommandBase & { type: "thread.list" })
   | (DesktopCommandBase & { type: "thread.create"; input: CreateThreadInput })
   | (DesktopCommandBase & { type: "thread.load"; threadId: string })

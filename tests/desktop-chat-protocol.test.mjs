@@ -29,6 +29,8 @@ const assistantMessage = {
 
 test("chat commands validate with well-formed payloads", () => {
   assert.equal(validateDesktopCommand(command("chat.list")).type, "chat.list");
+  assert.equal(validateDesktopCommand(command("repository.close")).type, "repository.close");
+  assert.throws(() => validateDesktopCommand(command("repository.close", { repositoryRoot: "/tmp/x" })), /unknown|missing/);
   assert.equal(validateDesktopCommand(command("chat.create", { input: {} })).type, "chat.create");
   assert.equal(validateDesktopCommand(command("chat.create", { input: { role: "heavy-reasoning", ground: true } })).type, "chat.create");
   assert.equal(validateDesktopCommand(command("chat.create", { input: { role: "heavyReasoning" } })).type, "chat.create");

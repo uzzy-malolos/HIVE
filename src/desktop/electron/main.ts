@@ -111,6 +111,7 @@ async function start(): Promise<void> {
   });
   const router = new DesktopCommandRouter({
     stateStore, credentialVault, workerSupervisor,
+    generalChatRoot: path.join(userData, "general-chats"),
     guardedGitFactory: (root) => {
       const key = path.resolve(root).toLowerCase();
       let service = gitServices.get(key);

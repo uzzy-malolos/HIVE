@@ -356,6 +356,23 @@ describe("HIVE desktop cockpit", () => {
     expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
   });
 
+  it("opens the current project in the terminal and file manager from its row menu", async () => {
+    const api = bridge();
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    api.emit({ type: "desktop.ready", timestamp: now, repositoryRoot: "C:\\HIVE" });
+    const projects = await screen.findByRole("group", { name: "Projects" });
+    await user.click(within(projects).getByRole("button", { name: "Project options" }));
+    await user.click(screen.getByRole("menuitem", { name: "Open in terminal" }));
+    await user.click(within(projects).getByRole("button", { name: "Project options" }));
+    await user.click(screen.getByRole("menuitem", { name: "Show in file manager" }));
+    await waitFor(() => {
+      const commands = api.request.mock.calls.map(([command]) => command);
+      expect(commands).toContainEqual(expect.objectContaining({ type: "external.open-terminal", repositoryRoot: "C:\\HIVE" }));
+      expect(commands).toContainEqual(expect.objectContaining({ type: "external.open-explorer", input: { repositoryRoot: "C:\\HIVE" } }));
+    });
+  });
+
   it("restores and deletes chats from the Archived chats dialog", async () => {
     const archived = { id: "chat-1789200000000-arc1", title: "Old research", role: "auto", updatedAt: now, messageCount: 2, archived: true };
     const api = bridge({
@@ -385,21 +402,34 @@ describe("HIVE desktop cockpit", () => {
     expect(within(dialog).getByText("No archived chats in this project.")).toBeInTheDocument();
   });
 
-  it("explains that a project is needed when New chat fails without one, and keeps the launch quiet", async () => {
+  it("switches between a project's chats and chats without a project", async () => {
+    let openRoot: string | null = null;
+    const generalChat = { id: "chat-1789200000000-gen1", title: "Weekend plans", role: "auto", updatedAt: now, messageCount: 1 };
+    const projectChat = { id: "chat-1789200000000-prj1", title: "Refactor notes", role: "auto", updatedAt: now, messageCount: 1 };
     const api = bridge({
       request: async (command) => {
-        if (command.type === "chat.list" || command.type === "chat.create") {
-          return { type: "request.failed", timestamp: now, requestId: command.requestId, message: "Open a repository before repository-scoped operations.", recoverable: true };
-        }
+        if (command.type === "repository.list") return { type: "repository.listed", timestamp: now, repositories: [{ path: "C:\\Work", lastOpenedAt: now }] };
+        if (command.type === "repository.open") { openRoot = command.repositoryRoot; return { type: "desktop.ready", timestamp: now, requestId: command.requestId, repositoryRoot: command.repositoryRoot }; }
+        if (command.type === "repository.close") { openRoot = null; return { type: "request.completed", timestamp: now, requestId: command.requestId }; }
+        if (command.type === "chat.list") return { type: "chat.listed", timestamp: now, conversations: openRoot ? [projectChat] : [generalChat] };
         return eventFor(command);
       },
     });
     const user = userEvent.setup();
     render(<App api={api} />);
-    await waitFor(() => expect(api.request.mock.calls.some(([command]) => command.type === "chat.list")).toBe(true));
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "New chat" }));
-    expect(await screen.findByText(/Open a project to start a chat/)).toBeInTheDocument();
+    const sidebar = screen.getByRole("navigation", { name: /global navigation/i });
+    await user.click(within(sidebar).getByRole("button", { name: "Chat" }));
+    expect(await within(sidebar).findByRole("button", { name: "Weekend plans" })).toBeInTheDocument();
+    expect(within(sidebar).getByRole("button", { name: /^No project/ })).toHaveAttribute("aria-current", "true");
+
+    await user.click(within(sidebar).getByRole("button", { name: /^Open project Work/ }));
+    expect(await within(sidebar).findByRole("button", { name: "Refactor notes" })).toBeInTheDocument();
+    expect(within(sidebar).queryByRole("button", { name: "Weekend plans" })).not.toBeInTheDocument();
+
+    await user.click(within(sidebar).getByRole("button", { name: /^No project/ }));
+    expect(await within(sidebar).findByRole("button", { name: "Weekend plans" })).toBeInTheDocument();
+    expect(within(sidebar).queryByRole("button", { name: "Refactor notes" })).not.toBeInTheDocument();
+    expect(within(sidebar).getByRole("button", { name: /^No project/ })).toHaveAttribute("aria-current", "true");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 

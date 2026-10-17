@@ -101,7 +101,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
 
   const send = async (command: DesktopCommandInput, scope?: { epoch?: number; repositoryRoot?: string }): Promise<DesktopEvent> => {
     const requestId = command.requestId ?? identifier("request");
-    if (command.type === "chat.send" || command.type === "chat.create" || command.type === "chat.cancel" || command.type === "chat.list") {
+    if (command.type === "chat.send" || command.type === "chat.create" || command.type === "chat.cancel") {
       chatRequestIds.current.add(requestId);
     }
     const expectedEpoch = scope?.epoch ?? openEpochRef.current;
@@ -110,8 +110,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
     if (scope?.repositoryRoot && event.repositoryRoot && event.repositoryRoot.toLowerCase() !== scope.repositoryRoot.toLowerCase()) return event;
     if (!scope?.epoch && event.repositoryRoot && (!repositoryRef.current || event.repositoryRoot.toLowerCase() !== repositoryRef.current.toLowerCase())) return event;
     dispatch(event);
-    // Chat commands report their own failures; chat.list fails harmlessly until a project is open.
-    if (event.type === "request.failed" && command.type !== "chat.send" && command.type !== "chat.create" && command.type !== "chat.list") {
+    if (event.type === "request.failed" && command.type !== "chat.send" && command.type !== "chat.create") {
       setStickyError(event.message);
     } else if (event.type === "worker.failed") {
       setStickyError(event.message);
@@ -348,11 +347,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
   const handleNewTask = async (): Promise<void> => {
     dispatch({ type: "ui.mode", mode: "chat" });
     updatePrefs({ mode: "chat" });
-    const created = await send({ type: "chat.create", input: {} });
-    // Chats are saved inside a project, so the backend refuses one until a folder is open.
-    if (created.type === "request.failed" && !stateRef.current.repositoryRoot) {
-      showToast({ tone: "warning", text: "Open a project to start a chat. Chats are saved inside the project folder." });
-    }
+    await send({ type: "chat.create", input: {} });
   };
   startNewChatRef.current = () => { void handleNewTask(); };
 
@@ -386,6 +381,27 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
         ]);
       }
     } finally { if (epoch === openEpochRef.current) setBusy(false); }
+  }
+
+  // Back to chats without a project: the backend drops the open folder and serves the app-data chat store.
+  async function closeRepository(): Promise<void> {
+    if (!state.repositoryRoot) return;
+    await flushPendingDeletes();
+    const epoch = ++openEpochRef.current;
+    const closed = await send({ type: "repository.close" }, { epoch });
+    if (epoch !== openEpochRef.current || closed.type === "request.failed") return;
+    repositoryRef.current = null;
+    dispatch({ type: "ui.repository-opening" });
+    setComposer("");
+    await send({ type: "chat.list" }, { epoch });
+  }
+
+  async function openProjectTerminal(): Promise<void> {
+    if (state.repositoryRoot) await send({ type: "external.open-terminal", repositoryRoot: state.repositoryRoot });
+  }
+
+  async function revealProject(): Promise<void> {
+    if (state.repositoryRoot) await send({ type: "external.open-explorer", input: { repositoryRoot: state.repositoryRoot } });
   }
 
   async function pickAndOpenRepository(): Promise<void> {
@@ -522,6 +538,11 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
       hint: "Browse",
       run: () => void pickAndOpenRepository(),
     });
+
+    if (state.repositoryRoot) {
+      list.push({ id: "project-terminal", label: "Open project in terminal", hint: "Terminal", run: () => void openProjectTerminal() });
+      list.push({ id: "project-reveal", label: "Show project in file manager", hint: "Folder", run: () => void revealProject() });
+    }
 
     state.repositories
       .filter((repo) => repo.path.toLowerCase() !== state.repositoryRoot?.toLowerCase())
@@ -734,6 +755,9 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
         repositoryPath={state.repositoryRoot ?? ""}
         onOpenRepository={openRepository}
         onPickRepository={pickAndOpenRepository}
+        onCloseRepository={closeRepository}
+        onOpenProjectTerminal={() => void openProjectTerminal()}
+        onRevealProject={() => void revealProject()}
         recentProjects={state.repositories}
         busy={busy}
         sidebarOpen={state.rails.left}
