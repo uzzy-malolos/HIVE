@@ -6,6 +6,7 @@ const EVENT_CHANNEL = "hive-desktop:event";
 const COMMANDS = new Set([
   "repository.list",
   "repository.open",
+  "repository.close",
   "thread.list",
   "thread.create",
   "thread.load",

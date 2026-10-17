@@ -33,6 +33,8 @@ export interface DesktopCommandRouterOptions {
   clock?: () => string;
   canonicalize?: (repositoryRoot: string) => Promise<string>;
   pickDirectory?: () => Promise<string | null>;
+  /** App-data directory that stores chats started without an open project. Without it, chat needs a project. */
+  generalChatRoot?: string;
 }
 
 const credentialRouterQueues = new WeakMap<object, Promise<void>>();
@@ -54,9 +56,9 @@ export class DesktopCommandRouter {
     this.#clock = options.clock ?? (() => new Date().toISOString());
     this.#canonicalize = options.canonicalize ?? ((root) => fs.realpath(root));
     this.#chatService = options.chatService ?? new DesktopChatService(
-      () => this.#requiredRepository(),
+      () => this.#repositoryRoot ?? options.generalChatRoot ?? this.#requiredRepository(),
       (event) => this.#emitServiceEvent(event),
-      options.chatServiceOptions,
+      { scope: () => (this.#repositoryRoot ? "project" : "general"), ...options.chatServiceOptions },
     );
     this.#councilService = options.councilService ?? new DesktopCouncilService(
       () => this.#requiredRepository(),
@@ -104,6 +106,13 @@ export class DesktopCommandRouter {
         this.#repositoryRoot = root;
         await this.options.stateStore.mutate((state) => ({ ...state, updatedAt: timestamp, recentRepositories: [{ path: root, lastOpenedAt: timestamp }, ...state.recentRepositories.filter((entry) => this.#key(entry.path) !== this.#key(root))].slice(0, 20) }));
         return { type: "desktop.ready", timestamp, repositoryRoot: root };
+      }
+      case "repository.close": {
+        const root = this.#repositoryRoot;
+        if (root && this.options.workerSupervisor.hasActiveRepository(root)) throw new Error("Wait for the active repository run to stop before closing the project.");
+        this.#repositoryOpenEpoch += 1;
+        this.#repositoryRoot = null;
+        return { type: "request.completed", timestamp, requestId: command.requestId };
       }
       case "thread.list": return { type: "thread.listed", timestamp, threads: await this.#threads().list() };
       case "thread.create": return { type: "thread.changed", timestamp, thread: await this.#threads().create(command.input) };

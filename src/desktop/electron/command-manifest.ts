@@ -1,6 +1,6 @@
 /** Canonical renderer-to-main command surface. Keep this array JSON-compatible for preload generation. */
 export const DESKTOP_COMMAND_TYPES = [
-  "repository.list", "repository.open", "thread.list", "thread.create", "thread.load", "thread.message.append", "thread.archive",
+  "repository.list", "repository.open", "repository.close", "thread.list", "thread.create", "thread.load", "thread.message.append", "thread.archive",
   "run.start", "run.pause", "run.resume", "run.cancel", "run.report", "provider.list", "provider.metadata", "provider.configure", "models.list",
   "credential.list", "credential.metadata", "credential.set", "credential.replace", "credential.remove", "credential.test", "git.inspect",
   "changes.diff", "git.commit.preview", "git.commit.confirm", "git.push.preview", "git.push.confirm", "git.pull-request.preview",

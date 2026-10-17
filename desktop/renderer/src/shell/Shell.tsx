@@ -41,6 +41,7 @@ export interface ShellProps {
   setRepositoryPath?: (path: string) => void;
   onOpenRepository?: (path: string) => Promise<void>;
   onPickRepository?: () => Promise<void>;
+  onCloseRepository?: () => Promise<void>;
   recentProjects?: SidebarRecentProject[];
   busy?: boolean;
   /** When false the global sidebar shrinks to an icon rail (Ctrl+B or the titlebar toggle). */
@@ -81,6 +82,7 @@ export function Shell({
   setRepositoryPath,
   onOpenRepository,
   onPickRepository,
+  onCloseRepository,
   recentProjects,
   busy,
   sidebarOpen = true,
@@ -128,6 +130,7 @@ export function Shell({
           setRepositoryPath={setRepositoryPath}
           onOpenRepository={onOpenRepository}
           onPickRepository={onPickRepository}
+          onCloseRepository={onCloseRepository}
           recentProjects={recentProjects}
           busy={busy}
         />

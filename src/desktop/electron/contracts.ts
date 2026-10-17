@@ -307,7 +307,7 @@ export function validateDesktopCommand(value: unknown): DesktopCommand {
   const type = string(root.type, "desktop command type", 80);
   if (!DESKTOP_COMMAND_TYPE_SET.has(type)) throw new Error(`Unsupported desktop command type: ${type}.`);
   const requestId = id(root.requestId, "request id");
-  const noPayload = new Set(["repository.list", "thread.list", "provider.list", "credential.list", "chat.list"]);
+  const noPayload = new Set(["repository.list", "repository.close", "thread.list", "provider.list", "credential.list", "chat.list"]);
   if (noPayload.has(type)) exact(root, ["requestId", "type"], "desktop command");
   else switch (type) {
     case "repository.open": exact(root, ["requestId", "type", "repositoryRoot"], "desktop command"); absolutePath(root.repositoryRoot, "repository root"); break;

@@ -1223,3 +1223,49 @@ test("coder.handoff refuses when a repository run is already active", async () =
   assert.equal(threads.length, 0);
   await rm(root, { recursive: true, force: true }); await rm(appData, { recursive: true, force: true });
 });
+
+test("chats work without a project in the general store, and repository.close returns to it", async () => {
+  const appData = await temporaryDirectory("hive-general-chat-state-");
+  const project = await temporaryDirectory("hive-general-chat-project-");
+  const generalChatRoot = path.join(appData, "general-chats");
+  let projectRunActive = false;
+  const router = new DesktopCommandRouter({
+    stateStore: new JsonDesktopAppStateStore(appData, { clock: () => now }),
+    credentialVault: { async list() { return []; }, async metadata() { return null; }, async set() {}, async replace() {}, async remove() {}, async test() {} },
+    workerSupervisor: { async dispatchAndWait() {}, async reconcileRepositoryRuns() {}, hasActiveRuns() { return false; }, hasActiveRepository() { return projectRunActive; } },
+    guardedGitFactory: () => { throw new Error("unused"); },
+    generalChatRoot,
+    clock: () => now,
+  });
+  try {
+    const general = await router.handle({ requestId: "create-general", type: "chat.create", input: {} });
+    assert.equal(general.type, "chat.changed");
+    assert.equal(general.conversation.cwd, generalChatRoot);
+    const grounded = await router.handle({ requestId: "create-grounded", type: "chat.create", input: { ground: true } });
+    assert.equal(grounded.type, "request.failed");
+    assert.match(grounded.message, /needs an open project/);
+    const agentic = await router.handle({ requestId: "send-agentic", type: "chat.send", input: { conversationId: general.conversation.id, content: "read my files", agent: true } });
+    assert.equal(agentic.type, "request.failed");
+    assert.match(agentic.message, /need an open project/);
+
+    await router.handle({ requestId: "open", type: "repository.open", repositoryRoot: project });
+    const projectList = await router.handle({ requestId: "list-project", type: "chat.list" });
+    assert.deepEqual(projectList.conversations, [], "project chats are separate from general chats");
+
+    projectRunActive = true;
+    const blocked = await router.handle({ requestId: "close-busy", type: "repository.close" });
+    assert.equal(blocked.type, "request.failed");
+    assert.match(blocked.message, /active repository run/);
+    projectRunActive = false;
+
+    const closed = await router.handle({ requestId: "close", type: "repository.close" });
+    assert.equal(closed.type, "request.completed");
+    const generalList = await router.handle({ requestId: "list-general", type: "chat.list" });
+    assert.deepEqual(generalList.conversations.map((entry) => entry.id), [general.conversation.id]);
+    const threads = await router.handle({ requestId: "threads", type: "thread.list" });
+    assert.equal(threads.type, "request.failed", "Hive Code threads still need a project");
+  } finally {
+    await rm(appData, { recursive: true, force: true });
+    await rm(project, { recursive: true, force: true });
+  }
+});

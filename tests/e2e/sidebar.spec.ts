@@ -33,19 +33,23 @@ test.describe.serial("HIVE desktop sidebar", () => {
     await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
-  test("opens a project, renames, archives, restores and deletes chats, and survives a restart", async () => {
+  test("chats without a project, then a project's chats: rename, archive, restore, delete, restart", async () => {
     const sidebar = page.getByRole("navigation", { name: "Global Navigation" });
     await expect(sidebar).toBeVisible();
-    // A fresh launch has no project; asking for its chats must not raise an error banner.
+    // A fresh launch has no project; chats still work and are kept in app data.
     await expect(page.getByRole("alert")).toHaveCount(0);
-
     await sidebar.getByRole("button", { name: "New chat" }).click();
-    await expect(page.getByText(/Open a project to start a chat/)).toBeVisible();
+    await rowMenu(sidebar, "New chat").click();
+    await page.getByRole("menuitem", { name: "Rename" }).click();
+    await sidebar.getByRole("textbox", { name: "Rename New chat" }).fill("Groceries");
+    await sidebar.getByRole("textbox", { name: "Rename New chat" }).press("Enter");
+    await expect(sidebar.getByRole("button", { name: "Groceries" })).toBeVisible();
 
     await sidebar.getByLabel("Repository path").fill(repository);
     await sidebar.getByRole("button", { name: "Open", exact: true }).click();
     const projects = sidebar.getByRole("group", { name: "Projects" });
     await expect(projects.getByRole("button", { name: /^sidebar-fixture \(/ })).toHaveAttribute("aria-current", "true");
+    await expect(sidebar.getByRole("button", { name: "Groceries" })).toHaveCount(0);
 
     await sidebar.getByRole("button", { name: "New chat" }).click();
     await expect(sidebar.getByRole("button", { name: "New chat", exact: true }).nth(1)).toBeVisible();
@@ -82,6 +86,14 @@ test.describe.serial("HIVE desktop sidebar", () => {
     await deleteChat(page, reopened, "Release notes");
     await expect(reopened.getByRole("button", { name: "Release notes" })).toHaveCount(0);
     await expect.poll(() => chatFiles(repository), { timeout: 15_000 }).toHaveLength(1);
+
+    // Leaving the project brings back the chats that belong to none.
+    await reopened.getByRole("button", { name: /^No project/ }).click();
+    await expect(reopened.getByRole("button", { name: "Groceries" })).toBeVisible();
+    await expect(reopened.getByRole("button", { name: "Release notes" })).toHaveCount(0);
+    // Off Windows, git.inspect raises a sticky alert because git is located via where.exe; only
+    // failures from leaving the project matter here.
+    await expect(page.getByRole("alert").filter({ hasText: /project|repository|chat/i })).toHaveCount(0);
   });
 
   test("collapses to an icon rail with Ctrl+B and expands from the titlebar", async () => {

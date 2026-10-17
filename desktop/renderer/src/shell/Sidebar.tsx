@@ -42,6 +42,8 @@ export interface SidebarProps {
   onOpenRepository?: (path: string) => Promise<void>;
   /** Opens the native folder picker and then the chosen project. */
   onPickRepository?: () => Promise<void>;
+  /** Leaves the open project for chats that belong to no project. */
+  onCloseRepository?: () => Promise<void>;
   recentProjects?: SidebarRecentProject[];
   busy?: boolean;
   /** Icon-only rail, as ChatGPT and Claude show when the sidebar is closed. */
@@ -160,6 +162,7 @@ export function Sidebar({
   setRepositoryPath,
   onOpenRepository,
   onPickRepository,
+  onCloseRepository,
   recentProjects = [],
   busy = false,
   collapsed = false,
@@ -461,6 +464,19 @@ export function Sidebar({
                   </div>
                 )}
                 <div className="hive-session-list" role="group" aria-label="Projects">
+                  {onCloseRepository && (repositoryPath || otherProjects.length > 0) ? (
+                    <button
+                      type="button"
+                      className={`hive-session-row hive-project-row${!repositoryPath && !busy ? " is-active" : ""}`}
+                      aria-current={!repositoryPath && !busy ? "true" : undefined}
+                      aria-label="No project (chats outside any folder)"
+                      title="Chats that don't belong to a project folder"
+                      onClick={() => { if (repositoryPath) void onCloseRepository(); }}
+                    >
+                      <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.chat}</span>
+                      <span className="hive-session-title">No project</span>
+                    </button>
+                  ) : null}
                   {repositoryPath ? (
                     <button
                       type="button"
@@ -491,11 +507,7 @@ export function Sidebar({
                       <span className="hive-session-title">{projectName(project.path)}</span>
                     </button>
                   ))}
-                  {!repositoryPath && !busy && otherProjects.length === 0 && !addingProject ? (
-                    <div className="hive-session-row hive-session-empty">
-                      <span className="hive-session-title">No projects yet</span>
-                    </div>
-                  ) : null}
+
                 </div>
               </>
             )}
