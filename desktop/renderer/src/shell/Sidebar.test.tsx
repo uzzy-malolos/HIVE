@@ -87,6 +87,58 @@ describe("Sidebar sessions", () => {
     expect(onArchiveSession).toHaveBeenCalledWith("chat-a");
   });
 
+  it("renames a chat inline, committing once on Enter", async () => {
+    const user = userEvent.setup();
+    const onRenameSession = vi.fn();
+    renderSidebar({ sessions, onRenameSession });
+    await user.click(screen.getByRole("button", { name: "Chat options", description: "Beta" }));
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const input = screen.getByRole("textbox", { name: "Rename Beta" });
+    expect(input).toHaveFocus();
+    await user.clear(input);
+    await user.type(input, "  Release   notes {Enter}");
+    expect(onRenameSession).toHaveBeenCalledTimes(1);
+    expect(onRenameSession).toHaveBeenCalledWith("chat-b", "Release notes");
+    expect(screen.queryByRole("textbox", { name: "Rename Beta" })).not.toBeInTheDocument();
+  });
+
+  it("drops a rename on Escape, and on blur when blank or unchanged", async () => {
+    const user = userEvent.setup();
+    const onRenameSession = vi.fn();
+    renderSidebar({ sessions, onRenameSession });
+    const startRename = async (title: string) => {
+      await user.click(screen.getByRole("button", { name: "Chat options", description: title }));
+      await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+      return screen.getByRole("textbox", { name: `Rename ${title}` });
+    };
+    await user.type(await startRename("Beta"), " draft{Escape}");
+    await user.clear(await startRename("Beta"));
+    await user.click(document.body);
+    await startRename("Alpha");
+    await user.click(document.body);
+    expect(onRenameSession).not.toHaveBeenCalled();
+  });
+
+  it("offers Rename and Delete for chats but not tasks", async () => {
+    const user = userEvent.setup();
+    const onDeleteSession = vi.fn();
+    renderSidebar({
+      mode: "coder",
+      sessions: [{ id: "thread-1", title: "Task one", kind: "coder", active: false }],
+      onRenameSession: vi.fn(),
+      onDeleteSession,
+      onArchiveSession: vi.fn(),
+    });
+    await user.click(screen.getByRole("button", { name: "Task options", description: "Task one" }));
+    expect(screen.queryByRole("menuitem", { name: "Rename" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Delete" })).not.toBeInTheDocument();
+    cleanup();
+    renderSidebar({ sessions, onDeleteSession });
+    await user.click(screen.getByRole("button", { name: "Chat options", description: "Alpha" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+    expect(onDeleteSession).toHaveBeenCalledWith("chat-a");
+  });
+
   it("moves starred sessions into their own section", () => {
     renderSidebar({ sessions, starredIds: ["chat-b"], onToggleStar: vi.fn() });
     const [starredHeader, chatsHeader] = [screen.getByRole("button", { name: "Starred" }), screen.getByRole("button", { name: "Chats" })];

@@ -399,6 +399,8 @@ export type DesktopCommand =
   | (DesktopCommandBase & { type: "chat.create"; input: { role?: string; ground?: boolean } })
   | (DesktopCommandBase & { type: "chat.load"; conversationId: string })
   | (DesktopCommandBase & { type: "chat.archive"; conversationId: string })
+  | (DesktopCommandBase & { type: "chat.rename"; input: { conversationId: string; title: string } })
+  | (DesktopCommandBase & { type: "chat.delete"; conversationId: string })
   | (DesktopCommandBase & {
       type: "chat.route";
       input?: { role?: string; providerId?: string; model?: string };

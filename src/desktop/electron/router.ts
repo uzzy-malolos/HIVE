@@ -75,7 +75,7 @@ export class DesktopCommandRouter {
     try {
       const command = validateDesktopCommand(untrusted);
       requestId = command.requestId;
-      const repositoryCommands = new Set(["repository.open", "thread.list", "thread.create", "thread.load", "thread.message.append", "thread.archive", "run.start", "run.pause", "run.resume", "run.cancel", "run.report", "git.inspect", "changes.diff", "git.commit.preview", "git.commit.confirm", "git.push.preview", "git.push.confirm", "git.pull-request.preview", "git.pull-request.confirm", "git.discard.preview", "git.discard.confirm", "external.open-editor", "external.open-terminal", "external.open-explorer", "chat.list", "chat.create", "chat.load", "chat.archive", "chat.route", "chat.send", "chat.cancel", "coder.handoff", "council.start", "council.cancel", "workspace.list", "workspace.read"]);
+      const repositoryCommands = new Set(["repository.open", "thread.list", "thread.create", "thread.load", "thread.message.append", "thread.archive", "run.start", "run.pause", "run.resume", "run.cancel", "run.report", "git.inspect", "changes.diff", "git.commit.preview", "git.commit.confirm", "git.push.preview", "git.push.confirm", "git.pull-request.preview", "git.pull-request.confirm", "git.discard.preview", "git.discard.confirm", "external.open-editor", "external.open-terminal", "external.open-explorer", "chat.list", "chat.create", "chat.load", "chat.archive", "chat.rename", "chat.delete", "chat.route", "chat.send", "chat.cancel", "coder.handoff", "council.start", "council.cancel", "workspace.list", "workspace.read"]);
       if (repositoryCommands.has(command.type)) provenanceRoot = command.type === "repository.open" ? command.repositoryRoot : this.#repositoryRoot;
       const dispatched = await this.#dispatch(command);
       const repositoryScoped = new Set(["desktop.ready", "thread.changed", "thread.listed", "run.changed", "run.pause-requested", "run.reported", "runtime.event", "worker.starting", "worker.started", "worker.stopped", "git.changed", "git.previewed", "git.action-completed", "changes.diffed", "workspace.listed", "workspace.file", "request.completed"]);
@@ -191,6 +191,8 @@ export class DesktopCommandRouter {
       case "chat.create": return { type: "chat.changed", timestamp, conversation: await this.#chatService.create(command.input) };
       case "chat.load": return { type: "chat.changed", timestamp, conversation: await this.#chatService.load(command.conversationId) };
       case "chat.archive": return { type: "chat.listed", timestamp, conversations: await this.#chatService.archive(command.conversationId) };
+      case "chat.rename": return { type: "chat.listed", timestamp, conversations: await this.#chatService.rename(command.input.conversationId, command.input.title) };
+      case "chat.delete": return { type: "chat.listed", timestamp, conversations: await this.#chatService.delete(command.conversationId) };
       case "chat.route": { void this.#chatService.route(command.input).catch((error) => this.#emitServiceEvent({ type: "request.failed", timestamp: this.#clock(), requestId: command.requestId, message: redactDesktopFailure(error), recoverable: true })); return { type: "request.completed", timestamp, requestId: command.requestId }; }
       case "chat.send": { await this.#chatService.send(command.input); return { type: "request.completed", timestamp, requestId: command.requestId }; }
       case "chat.cancel": { this.#chatService.cancel(command.conversationId); return { type: "request.completed", timestamp, requestId: command.requestId }; }

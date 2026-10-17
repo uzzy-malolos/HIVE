@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import type { DesktopMode } from "../state";
 import { projectName } from "../utils";
 
@@ -25,6 +25,9 @@ export interface SidebarProps {
   sessions: SidebarSession[];
   onSelectSession: (id: string) => void;
   onArchiveSession?: (id: string) => void;
+  /** Chats only: rename in place / delete permanently. */
+  onRenameSession?: (id: string, title: string) => void;
+  onDeleteSession?: (id: string) => void;
   /** Session ids pinned to the Starred section. */
   starredIds?: string[];
   onToggleStar?: (id: string) => void;
@@ -120,6 +123,11 @@ const GLYPHS: Record<string, React.ReactNode> = {
       <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10" />
     </svg>
   ),
+  trash: (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1L5 6M10 11v6M14 11v6" />
+    </svg>
+  ),
   chevron: (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="m6 9 6 6 6-6" />
@@ -137,6 +145,8 @@ export function Sidebar({
   sessions,
   onSelectSession,
   onArchiveSession,
+  onRenameSession,
+  onDeleteSession,
   starredIds = [],
   onToggleStar,
   onOpenUsage,
@@ -155,6 +165,13 @@ export function Sidebar({
   const [addingProject, setAddingProject] = useState(!repositoryPath && recentProjects.length === 0);
   const [closedSections, setClosedSections] = useState<Record<SectionKey, boolean>>({ projects: false, starred: false, sessions: false });
   const [menu, setMenu] = useState<string | null>(null);
+  const [renaming, setRenamingState] = useState<{ id: string; draft: string } | null>(null);
+  // Mirrors `renaming` so Enter followed by the unmount blur commits only once.
+  const renamingRef = useRef(renaming);
+  const setRenaming = (next: { id: string; draft: string } | null): void => {
+    renamingRef.current = next;
+    setRenamingState(next);
+  };
 
   // Follow the open project when it changes from elsewhere (palette, picker, startup).
   useEffect(() => {
@@ -275,14 +292,42 @@ export function Sidebar({
     </div>
   );
 
+  // Enter or blur saves; an unchanged or blank name is dropped, as in ChatGPT and Claude.
+  const commitRename = (): void => {
+    const current = renamingRef.current;
+    if (!current) return;
+    const title = current.draft.replace(/\s+/g, " ").trim();
+    const original = sessions.find((session) => session.id === current.id)?.title;
+    setRenaming(null);
+    if (title && title !== original) onRenameSession?.(current.id, title);
+  };
+
   const sessionRow = (session: SidebarSession) => {
     const isStarred = starred.has(session.id);
     const menuId = `session:${session.id}`;
-    const hasMenu = Boolean(onToggleStar || onArchiveSession);
+    const canRename = session.kind === "chat" && Boolean(onRenameSession);
+    const canDelete = session.kind === "chat" && Boolean(onDeleteSession);
+    const hasMenu = Boolean(onToggleStar || onArchiveSession || canRename || canDelete);
     const titleId = `hive-session-title-${session.id}`;
     const optionsLabel = session.kind === "coder" ? "Task options" : "Chat options";
     return (
       <div key={session.id} className={`hive-session-item${menu === menuId ? " is-menu-open" : ""}`} data-sidebar-menu={menu === menuId ? true : undefined}>
+        {renaming?.id === session.id ? (
+          <input
+            className="hive-session-rename"
+            value={renaming.draft}
+            onChange={(event) => setRenaming({ id: session.id, draft: event.target.value })}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") { event.preventDefault(); commitRename(); }
+              else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setRenaming(null); }
+            }}
+            onBlur={commitRename}
+            aria-label={`Rename ${session.title}`}
+            maxLength={120}
+            autoFocus
+            onFocus={(event) => event.target.select()}
+          />
+        ) : (
         <button
           type="button"
           className={`hive-session-row${session.active ? " is-active" : ""}`}
@@ -295,7 +340,8 @@ export function Sidebar({
             <span className={`hive-session-status is-${session.status.toLowerCase()}`}>{session.status}</span>
           ) : null}
         </button>
-        {hasMenu && (
+        )}
+        {hasMenu && renaming?.id !== session.id && (
           <button
             type="button"
             className="hive-session-more"
@@ -311,6 +357,11 @@ export function Sidebar({
         )}
         {menu === menuId && (
           <div className="hive-sidebar-menu hive-session-menu" role="menu" aria-label={optionsLabel} aria-describedby={titleId} data-sidebar-menu>
+            {canRename && (
+              <button type="button" role="menuitem" className="hive-menu-item" onClick={() => { setMenu(null); setRenaming({ id: session.id, draft: session.title }); }}>
+                <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.compose}</span>Rename
+              </button>
+            )}
             {onToggleStar && (
               <button type="button" role="menuitem" className="hive-menu-item" onClick={() => { setMenu(null); onToggleStar(session.id); }}>
                 <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.star}</span>{isStarred ? "Unstar" : "Star"}
@@ -319,6 +370,11 @@ export function Sidebar({
             {onArchiveSession && (
               <button type="button" role="menuitem" className="hive-menu-item" onClick={() => { setMenu(null); onArchiveSession(session.id); }}>
                 <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.archive}</span>Archive
+              </button>
+            )}
+            {canDelete && (
+              <button type="button" role="menuitem" className="hive-menu-item is-danger" onClick={() => { setMenu(null); onDeleteSession?.(session.id); }}>
+                <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.trash}</span>Delete
               </button>
             )}
           </div>

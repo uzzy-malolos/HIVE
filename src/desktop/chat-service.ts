@@ -15,7 +15,7 @@ import type {
   ChatSessionRecord,
 } from "../chat/types.js";
 import { CHAT_ROLE_META, CHAT_ROLE_SLUGS, classifyTask, normalizeChatRole, type ChatRoleSlug } from "../chat/roles.js";
-import { ChatSessionStore, newChatSessionId, CHAT_SESSION_ID_PATTERN } from "../chat/session-store.js";
+import { ChatSessionStore, newChatSessionId, CHAT_SESSION_ID_PATTERN, CHAT_TITLE_MAX_CHARS } from "../chat/session-store.js";
 import { compactHistory } from "../chat/history.js";
 import { HISTORY_CHAR_BUDGET } from "../chat/chat-cli.js";
 import { buildScoutGrounding } from "../chat/grounding.js";
@@ -90,6 +90,7 @@ function renderHistory(history: ChatMessage[]): string {
 }
 
 function conversationTitle(record: ChatSessionRecord): string {
+  if (record.title?.trim()) return record.title.trim();
   const firstUser = record.messages.find((message) => message.role === "user");
   if (!firstUser) return "New chat";
   const flat = firstUser.content.replace(/\s+/g, " ").trim();
@@ -99,6 +100,7 @@ function conversationTitle(record: ChatSessionRecord): string {
 function toConversation(record: ChatSessionRecord): DesktopChatConversation {
   return {
     id: record.id,
+    title: conversationTitle(record),
     cwd: record.cwd,
     role: record.role,
     ground: record.grounded ?? false,
@@ -193,6 +195,36 @@ export class DesktopChatService {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error("Chat conversation not found.");
       throw error;
     }
+    return this.list();
+  }
+
+  /** Sets a custom title without reordering history; a blank title restores the derived one. */
+  public async rename(conversationId: string, title: string): Promise<DesktopChatSummary[]> {
+    if (this.#controllers.has(conversationId)) throw new Error("Cancel the streaming turn before renaming this conversation.");
+    const record = await this.#loadRecord(conversationId);
+    const flat = title.replace(/\s+/g, " ").trim().slice(0, CHAT_TITLE_MAX_CHARS);
+    const { title: _previous, ...rest } = record;
+    await this.#store().save(flat ? { ...rest, title: flat } : rest, { preserveUpdatedAt: true });
+    return this.list();
+  }
+
+  /** Permanently deletes a conversation (active or archived) and drops its cached engine state. */
+  public async delete(conversationId: string): Promise<DesktopChatSummary[]> {
+    if (!CHAT_SESSION_ID_PATTERN.test(conversationId)) throw new Error("Chat conversation id is invalid.");
+    if (this.#controllers.has(conversationId)) throw new Error("Cancel the streaming turn before deleting this conversation.");
+    const store = this.#store();
+    let removed = await store.delete(conversationId);
+    if (!removed) {
+      try {
+        await fs.unlink(path.join(store.baseDirectory, ARCHIVED_DIRECTORY, `${conversationId}.json`));
+        removed = true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    if (!removed) throw new Error("Chat conversation not found.");
+    this.#engines.delete(conversationId);
+    this.#groundPacks.delete(conversationId);
     return this.list();
   }
 

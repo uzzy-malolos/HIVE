@@ -17,6 +17,8 @@ export interface ShellProps {
   onSelectSession: (id: string) => void;
   onOpenSearch?: () => void;
   onArchiveSession?: (id: string) => void;
+  onRenameSession?: (id: string, title: string) => void;
+  onDeleteSession?: (id: string) => void;
   starredIds?: string[];
   onToggleStar?: (id: string) => void;
   onOpenShortcuts?: () => void;
@@ -56,6 +58,8 @@ export function Shell({
   onSelectSession,
   onOpenSearch,
   onArchiveSession,
+  onRenameSession,
+  onDeleteSession,
   starredIds,
   onToggleStar,
   onOpenShortcuts,
@@ -105,6 +109,8 @@ export function Shell({
           collapsed={!sidebarOpen}
           onOpenSearch={onOpenSearch}
           onArchiveSession={onArchiveSession}
+          onRenameSession={onRenameSession}
+          onDeleteSession={onDeleteSession}
           starredIds={starredIds}
           onToggleStar={onToggleStar}
           onOpenShortcuts={onOpenShortcuts}

@@ -4,6 +4,7 @@ import type { HiveDesktopBridge } from "./bridge";
 import { installedBridge, type DesktopCommandInput } from "./bridge";
 import { CommandPalette, PaletteCommand } from "./components/CommandPalette";
 import { ConfirmationDialog } from "./components/ConfirmationDialog";
+import { Dialog } from "./Dialog";
 import { ProviderDialog } from "./components/ProviderDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { SettingsSurface } from "./components/settings/SettingsSurface";
@@ -41,6 +42,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
   const [modelsLoading, setModelsLoading] = useState<Record<string, boolean>>({});
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [stickyError, setStickyError] = useState<string | null>(null);
@@ -161,7 +163,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
   const repositoryActiveRun = state.threads.flatMap((thread) => thread.runs).find((run) => !terminalStatuses.has(run.status)) ?? null;
   const sessionId = currentRun?.codingSessionId;
   const report = sessionId ? state.reports[sessionId] : null;
-  const modalOpen = Boolean(state.preview || providerDialog || settingsOpen || paletteOpen || searchOpen || shortcutHelpOpen);
+  const modalOpen = Boolean(state.preview || providerDialog || settingsOpen || paletteOpen || searchOpen || shortcutHelpOpen || deleteTarget);
 
   // --- Shell-derived navigation/tabs -------------------------------------------------
   const openSettingsModels = () => { setSettingsTab("models"); setSettingsOpen(true); };
@@ -264,6 +266,23 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
     } else if (id.startsWith("thread-")) {
       await send({ type: "thread.archive", threadId: id.slice("thread-".length) });
     }
+  };
+
+  const renameChat = async (id: string, title: string): Promise<void> => {
+    if (!id.startsWith("chat-")) return;
+    await send({ type: "chat.rename", input: { conversationId: id.slice("chat-".length), title } });
+  };
+
+  const confirmDeleteChat = async (): Promise<void> => {
+    if (!deleteTarget) return;
+    const { id } = deleteTarget;
+    setDeleteTarget(null);
+    const conversationId = id.slice("chat-".length);
+    const deleted = await send({ type: "chat.delete", conversationId });
+    if (deleted.type !== "chat.listed") return;
+    if (prefs.starred?.includes(id)) updatePrefs({ starred: prefs.starred.filter((entry) => entry !== id) });
+    // Deleting the open chat lands on a fresh one, as archiving does.
+    if (state.chat.activeId === conversationId) await handleNewTask();
   };
 
   // Search spans every unarchived chat and, with a project open, its tasks.
@@ -550,6 +569,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
       if (event.key === "Escape") {
         if (paletteOpen) { setPaletteOpen(false); return; }
         if (searchOpen) { setSearchOpen(false); return; }
+        if (deleteTarget) { setDeleteTarget(null); return; }
         if (shortcutHelpOpen) { setShortcutHelpOpen(false); return; }
         if (settingsOpen) { setSettingsOpen(false); return; }
         if (providerDialog) { closeProviderDialog(); return; }
@@ -623,7 +643,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [paletteOpen, searchOpen, shortcutHelpOpen, settingsOpen, providerDialog, state.preview, modalOpen, composer, activeThread, state.repositoryRoot, repositoryActiveRun]);
+  }, [paletteOpen, searchOpen, deleteTarget, shortcutHelpOpen, settingsOpen, providerDialog, state.preview, modalOpen, composer, activeThread, state.repositoryRoot, repositoryActiveRun]);
 
   return (
     <div className="app-shell dual-shell" data-density={prefs.density ?? "comfortable"} data-accent={prefs.accent ?? "vivid"}>
@@ -639,6 +659,11 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
         onSelectSession={handleSelectSession}
         onOpenSearch={() => setSearchOpen(true)}
         onArchiveSession={(id) => void archiveSession(id)}
+        onRenameSession={(id, title) => void renameChat(id, title)}
+        onDeleteSession={(id) => {
+          const session = recentSessions.find((entry) => entry.id === id);
+          if (session) setDeleteTarget({ id, title: session.title });
+        }}
         starredIds={starredIds}
         onToggleStar={toggleStar}
         onOpenShortcuts={() => setShortcutHelpOpen(true)}
@@ -824,6 +849,18 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
         placeholder="Search chats and tasks..."
         emptyText="No matching chats or tasks"
       />
+
+      {deleteTarget && (
+        <Dialog title="Delete chat?" onClose={() => setDeleteTarget(null)} initialFocus="first">
+          <p>
+            This will permanently delete <strong>{deleteTarget.title}</strong>. It can't be undone; archive it instead to keep a copy.
+          </p>
+          <div className="dialog-actions">
+            <button type="button" onClick={() => setDeleteTarget(null)}>Cancel</button>
+            <button type="button" className="danger" onClick={() => void confirmDeleteChat()}>Delete</button>
+          </div>
+        </Dialog>
+      )}
 
       {shortcutHelpOpen && (
         <ShortcutHelp onClose={() => setShortcutHelpOpen(false)} />
