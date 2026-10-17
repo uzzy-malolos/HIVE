@@ -18,7 +18,7 @@ import { Shell } from "./shell/Shell";
 import type { SidebarSession } from "./shell/Sidebar";
 import type { WorkspaceTab } from "./shell/WorkspaceTabs";
 import { notifyRunCompleted } from "./notifications";
-import { usePrefs } from "./prefs";
+import { loadPrefs, usePrefs } from "./prefs";
 import { initialDesktopState, latestRun, reduceDesktopEvent, type CenterTab, type DesktopMode } from "./state";
 import { identifier, projectName, terminalStatuses } from "./utils";
 import "./styles.css";
@@ -43,8 +43,19 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
+  const [archivedOpen, setArchivedOpen] = useState(false);
+  // Chats deleted but still inside their undo window; hidden now, removed when the timer fires.
+  const [pendingDeletes, setPendingDeletes] = useState<string[]>([]);
+  const deleteTimers = useRef(new Map<string, { timer: ReturnType<typeof setTimeout>; run: () => Promise<void> }>());
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const dismissToast = (id: string): void => setToasts((prev) => prev.filter((t) => t.id !== id));
+  const showToast = (toast: Omit<ToastItem, "id">, durationMs = 6000): string => {
+    const id = identifier("toast");
+    setToasts((prev) => [...prev, { ...toast, id }]);
+    setTimeout(() => dismissToast(id), durationMs);
+    return id;
+  };
   const [stickyError, setStickyError] = useState<string | null>(null);
 
   async function fetchModels(providerId: string): Promise<void> {
@@ -89,7 +100,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
 
   const send = async (command: DesktopCommandInput, scope?: { epoch?: number; repositoryRoot?: string }): Promise<DesktopEvent> => {
     const requestId = command.requestId ?? identifier("request");
-    if (command.type === "chat.send" || command.type === "chat.create" || command.type === "chat.cancel") {
+    if (command.type === "chat.send" || command.type === "chat.create" || command.type === "chat.cancel" || command.type === "chat.list") {
       chatRequestIds.current.add(requestId);
     }
     const expectedEpoch = scope?.epoch ?? openEpochRef.current;
@@ -98,7 +109,8 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
     if (scope?.repositoryRoot && event.repositoryRoot && event.repositoryRoot.toLowerCase() !== scope.repositoryRoot.toLowerCase()) return event;
     if (!scope?.epoch && event.repositoryRoot && (!repositoryRef.current || event.repositoryRoot.toLowerCase() !== repositoryRef.current.toLowerCase())) return event;
     dispatch(event);
-    if (event.type === "request.failed" && command.type !== "chat.send" && command.type !== "chat.create") {
+    // Chat commands report their own failures; chat.list fails harmlessly until a project is open.
+    if (event.type === "request.failed" && command.type !== "chat.send" && command.type !== "chat.create" && command.type !== "chat.list") {
       setStickyError(event.message);
     } else if (event.type === "worker.failed") {
       setStickyError(event.message);
@@ -163,7 +175,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
   const repositoryActiveRun = state.threads.flatMap((thread) => thread.runs).find((run) => !terminalStatuses.has(run.status)) ?? null;
   const sessionId = currentRun?.codingSessionId;
   const report = sessionId ? state.reports[sessionId] : null;
-  const modalOpen = Boolean(state.preview || providerDialog || settingsOpen || paletteOpen || searchOpen || shortcutHelpOpen || deleteTarget);
+  const modalOpen = Boolean(state.preview || providerDialog || settingsOpen || paletteOpen || searchOpen || shortcutHelpOpen || deleteTarget || archivedOpen);
 
   // --- Shell-derived navigation/tabs -------------------------------------------------
   const openSettingsModels = () => { setSettingsTab("models"); setSettingsOpen(true); };
@@ -216,12 +228,13 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
             kind: "coder" as const,
             active: thread.id === state.activeThreadId,
             updatedAt: thread.updatedAt,
+            busy: Boolean(live),
             ...(live ? { status: live.status } : {}),
           };
         });
     }
     return state.chat.conversations
-      .filter((conversation) => !conversation.archived)
+      .filter((conversation) => !conversation.archived && !pendingDeletes.includes(`chat-${conversation.id}`))
       .slice()
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
       .map((conversation) => ({
@@ -230,8 +243,9 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
         kind: "chat" as const,
         active: conversation.id === state.chat.activeId,
         updatedAt: conversation.updatedAt,
+        busy: Boolean(state.chat.streaming[conversation.id]),
       }));
-  }, [state.mode, state.chat.conversations, state.chat.activeId, state.threads, state.activeThreadId]);
+  }, [state.mode, state.chat.conversations, state.chat.activeId, state.chat.streaming, state.threads, state.activeThreadId, pendingDeletes]);
 
   const sessionTabs: WorkspaceTab[] = recentSessions.slice(0, 4).map((s) => ({ id: s.id, label: s.title, kind: s.kind }));
   const activeTabId = state.mode === "chat"
@@ -273,32 +287,71 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
     await send({ type: "chat.rename", input: { conversationId: id.slice("chat-".length), title } });
   };
 
+  const DELETE_UNDO_MS = 6000;
+  const settlePendingDelete = (id: string): void => {
+    const pending = deleteTimers.current.get(id);
+    if (pending) clearTimeout(pending.timer);
+    deleteTimers.current.delete(id);
+    setPendingDeletes((prev) => prev.filter((entry) => entry !== id));
+  };
+
+  // The chat disappears at once but is only removed after the undo window; closing the app inside it keeps the chat.
   const confirmDeleteChat = async (): Promise<void> => {
     if (!deleteTarget) return;
-    const { id } = deleteTarget;
+    const { id, title } = deleteTarget;
     setDeleteTarget(null);
     const conversationId = id.slice("chat-".length);
-    const deleted = await send({ type: "chat.delete", conversationId });
-    if (deleted.type !== "chat.listed") return;
-    if (prefs.starred?.includes(id)) updatePrefs({ starred: prefs.starred.filter((entry) => entry !== id) });
+    setPendingDeletes((prev) => [...prev, id]);
+    let toastId = "";
+    const run = async (): Promise<void> => {
+      settlePendingDelete(id);
+      dismissToast(toastId);
+      const deleted = await send({ type: "chat.delete", conversationId });
+      if (deleted.type !== "chat.listed") return;
+      const starred = loadPrefs().starred;
+      if (starred?.includes(id)) updatePrefs({ starred: starred.filter((entry) => entry !== id) });
+    };
+    deleteTimers.current.set(id, { timer: setTimeout(() => void run(), DELETE_UNDO_MS), run });
+    toastId = showToast({
+      tone: "neutral",
+      text: `Deleted "${title}"`,
+      action: { label: "Undo", run: () => { settlePendingDelete(id); dismissToast(toastId); } },
+    }, DELETE_UNDO_MS);
     // Deleting the open chat lands on a fresh one, as archiving does.
     if (state.chat.activeId === conversationId) await handleNewTask();
   };
 
+  // Chats live in their project, so pending deletes must land before the open project changes.
+  const flushPendingDeletes = async (): Promise<void> => {
+    await Promise.all([...deleteTimers.current.values()].map((pending) => pending.run()));
+  };
+
+  useEffect(() => () => { deleteTimers.current.forEach((pending) => clearTimeout(pending.timer)); }, []);
+
+  const restoreChat = async (conversationId: string): Promise<void> => {
+    await send({ type: "chat.unarchive", conversationId });
+  };
+
+  const archivedChats = state.chat.conversations.filter((conversation) => conversation.archived && !pendingDeletes.includes(`chat-${conversation.id}`));
+
   // Search spans every unarchived chat and, with a project open, its tasks.
   const searchCommands: PaletteCommand[] = useMemo(() => [
     ...state.chat.conversations
-      .filter((conversation) => !conversation.archived)
+      .filter((conversation) => !conversation.archived && !pendingDeletes.includes(`chat-${conversation.id}`))
       .map((conversation) => ({ id: `chat-${conversation.id}`, label: conversation.title || "New chat", hint: "Chat", run: () => handleSelectSession(`chat-${conversation.id}`) })),
     ...state.threads
       .filter((thread) => !thread.archived)
       .map((thread) => ({ id: `thread-${thread.id}`, label: thread.title, hint: "Task", run: () => handleSelectSession(`thread-${thread.id}`) })),
-  ], [state.chat.conversations, state.threads]);
+  ], [state.chat.conversations, state.threads, pendingDeletes]);
 
   const handleNewTask = async (): Promise<void> => {
     dispatch({ type: "ui.mode", mode: "chat" });
     updatePrefs({ mode: "chat" });
-    await send({ type: "chat.create", input: {} });
+    const created = await send({ type: "chat.create", input: {} });
+    // Chats are saved inside a project, so the backend refuses one until a folder is open.
+    if (created.type === "request.failed" && !stateRef.current.repositoryRoot) {
+      showToast({ tone: "warning", text: "Open a project to start a chat. Chats are saved inside the project folder." });
+    }
   };
   startNewChatRef.current = () => { void handleNewTask(); };
 
@@ -312,6 +365,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
 
   async function openRepository(root: string): Promise<void> {
     const value = root.trim(); if (!value) return;
+    await flushPendingDeletes();
     const epoch = ++openEpochRef.current;
     repositoryRef.current = null;
     dispatch({ type: "ui.repository-opening" });
@@ -570,6 +624,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
         if (paletteOpen) { setPaletteOpen(false); return; }
         if (searchOpen) { setSearchOpen(false); return; }
         if (deleteTarget) { setDeleteTarget(null); return; }
+        if (archivedOpen) { setArchivedOpen(false); return; }
         if (shortcutHelpOpen) { setShortcutHelpOpen(false); return; }
         if (settingsOpen) { setSettingsOpen(false); return; }
         if (providerDialog) { closeProviderDialog(); return; }
@@ -643,7 +698,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [paletteOpen, searchOpen, deleteTarget, shortcutHelpOpen, settingsOpen, providerDialog, state.preview, modalOpen, composer, activeThread, state.repositoryRoot, repositoryActiveRun]);
+  }, [paletteOpen, searchOpen, deleteTarget, archivedOpen, shortcutHelpOpen, settingsOpen, providerDialog, state.preview, modalOpen, composer, activeThread, state.repositoryRoot, repositoryActiveRun]);
 
   return (
     <div className="app-shell dual-shell" data-density={prefs.density ?? "comfortable"} data-accent={prefs.accent ?? "vivid"}>
@@ -667,6 +722,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
         starredIds={starredIds}
         onToggleStar={toggleStar}
         onOpenShortcuts={() => setShortcutHelpOpen(true)}
+        onOpenArchived={() => setArchivedOpen(true)}
         repositoryPath={state.repositoryRoot ?? ""}
         onOpenRepository={openRepository}
         onPickRepository={pickAndOpenRepository}
@@ -793,7 +849,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
         )}
       </Shell>
 
-      <Toast toasts={toasts} onDismiss={(id) => setToasts((prev) => prev.filter((t) => t.id !== id))} />
+      <Toast toasts={toasts} onDismiss={dismissToast} />
 
       <div className="announcer" aria-live="polite" aria-atomic="true" aria-hidden={modalOpen || undefined}>
         {saving ? "Saving message..." : state.notice}
@@ -850,10 +906,31 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
         emptyText="No matching chats or tasks"
       />
 
+      {archivedOpen && (
+        <Dialog title="Archived chats" onClose={() => setArchivedOpen(false)} className="archived-dialog">
+          {archivedChats.length === 0 ? (
+            <p className="archived-empty">No archived chats in this project.</p>
+          ) : (
+            <ul className="archived-list" aria-label="Archived chats">
+              {archivedChats.map((conversation) => (
+                <li key={conversation.id} className="archived-row">
+                  <span className="archived-title" title={conversation.title}>{conversation.title || "New chat"}</span>
+                  <button type="button" onClick={() => void restoreChat(conversation.id)} aria-label={`Restore ${conversation.title || "New chat"}`}>Restore</button>
+                  <button type="button" className="danger" onClick={() => setDeleteTarget({ id: `chat-${conversation.id}`, title: conversation.title || "New chat" })} aria-label={`Delete ${conversation.title || "New chat"}`}>Delete</button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="dialog-actions">
+            <button type="button" onClick={() => setArchivedOpen(false)}>Close</button>
+          </div>
+        </Dialog>
+      )}
+
       {deleteTarget && (
         <Dialog title="Delete chat?" onClose={() => setDeleteTarget(null)} initialFocus="first">
           <p>
-            This will permanently delete <strong>{deleteTarget.title}</strong>. It can't be undone; archive it instead to keep a copy.
+            This will permanently delete <strong>{deleteTarget.title}</strong>. You can undo for a few seconds afterwards; archive it instead to keep a copy.
           </p>
           <div className="dialog-actions">
             <button type="button" onClick={() => setDeleteTarget(null)}>Cancel</button>

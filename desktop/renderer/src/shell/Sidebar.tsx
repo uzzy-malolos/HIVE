@@ -9,6 +9,8 @@ export interface SidebarSession {
   active: boolean;
   status?: string;
   updatedAt?: string;
+  /** A reply is streaming or a run is live; rename, archive and delete wait until it ends. */
+  busy?: boolean;
 }
 
 export interface SidebarRecentProject {
@@ -34,6 +36,7 @@ export interface SidebarProps {
   onOpenUsage: () => void;
   onOpenSettings: () => void;
   onOpenShortcuts?: () => void;
+  onOpenArchived?: () => void;
   repositoryPath?: string;
   setRepositoryPath?: (path: string) => void;
   onOpenRepository?: (path: string) => Promise<void>;
@@ -152,6 +155,7 @@ export function Sidebar({
   onOpenUsage,
   onOpenSettings,
   onOpenShortcuts,
+  onOpenArchived,
   repositoryPath = "",
   setRepositoryPath,
   onOpenRepository,
@@ -244,6 +248,11 @@ export function Sidebar({
           <button type="button" role="menuitem" className={`hive-menu-item${mode === "usage" ? " is-active" : ""}`} onClick={() => { setMenu(null); onOpenUsage(); }}>
             <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.usage}</span>Usage &amp; Telemetry
           </button>
+          {onOpenArchived && (
+            <button type="button" role="menuitem" className="hive-menu-item" onClick={() => { setMenu(null); onOpenArchived(); }}>
+              <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.archive}</span>Archived chats
+            </button>
+          )}
           {onOpenShortcuts && (
             <button type="button" role="menuitem" className="hive-menu-item" onClick={() => { setMenu(null); onOpenShortcuts(); }}>
               <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.keyboard}</span>Keyboard shortcuts
@@ -310,6 +319,8 @@ export function Sidebar({
     const hasMenu = Boolean(onToggleStar || onArchiveSession || canRename || canDelete);
     const titleId = `hive-session-title-${session.id}`;
     const optionsLabel = session.kind === "coder" ? "Task options" : "Chat options";
+    const busyNote = session.kind === "coder" ? "Available once the run stops" : "Available once the reply finishes";
+    const busyProps = session.busy ? { disabled: true, title: busyNote } : {};
     return (
       <div key={session.id} className={`hive-session-item${menu === menuId ? " is-menu-open" : ""}`} data-sidebar-menu={menu === menuId ? true : undefined}>
         {renaming?.id === session.id ? (
@@ -358,7 +369,7 @@ export function Sidebar({
         {menu === menuId && (
           <div className="hive-sidebar-menu hive-session-menu" role="menu" aria-label={optionsLabel} aria-describedby={titleId} data-sidebar-menu>
             {canRename && (
-              <button type="button" role="menuitem" className="hive-menu-item" onClick={() => { setMenu(null); setRenaming({ id: session.id, draft: session.title }); }}>
+              <button type="button" role="menuitem" className="hive-menu-item" {...busyProps} onClick={() => { setMenu(null); setRenaming({ id: session.id, draft: session.title }); }}>
                 <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.compose}</span>Rename
               </button>
             )}
@@ -368,15 +379,16 @@ export function Sidebar({
               </button>
             )}
             {onArchiveSession && (
-              <button type="button" role="menuitem" className="hive-menu-item" onClick={() => { setMenu(null); onArchiveSession(session.id); }}>
+              <button type="button" role="menuitem" className="hive-menu-item" {...busyProps} onClick={() => { setMenu(null); onArchiveSession(session.id); }}>
                 <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.archive}</span>Archive
               </button>
             )}
             {canDelete && (
-              <button type="button" role="menuitem" className="hive-menu-item is-danger" onClick={() => { setMenu(null); onDeleteSession?.(session.id); }}>
+              <button type="button" role="menuitem" className="hive-menu-item is-danger" {...busyProps} onClick={() => { setMenu(null); onDeleteSession?.(session.id); }}>
                 <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.trash}</span>Delete
               </button>
             )}
+            {session.busy ? <div className="hive-menu-note">{busyNote}</div> : null}
           </div>
         )}
       </div>

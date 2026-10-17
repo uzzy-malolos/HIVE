@@ -139,6 +139,21 @@ describe("Sidebar sessions", () => {
     expect(onDeleteSession).toHaveBeenCalledWith("chat-a");
   });
 
+  it("disables rename, archive and delete while a reply is streaming, but keeps star", async () => {
+    const user = userEvent.setup();
+    renderSidebar({
+      sessions: [{ ...sessions[0], busy: true }],
+      onRenameSession: vi.fn(),
+      onDeleteSession: vi.fn(),
+      onArchiveSession: vi.fn(),
+      onToggleStar: vi.fn(),
+    });
+    await user.click(screen.getByRole("button", { name: "Chat options", description: "Alpha" }));
+    for (const name of ["Rename", "Archive", "Delete"]) expect(screen.getByRole("menuitem", { name })).toBeDisabled();
+    expect(screen.getByRole("menuitem", { name: "Star" })).toBeEnabled();
+    expect(screen.getByText("Available once the reply finishes")).toBeInTheDocument();
+  });
+
   it("moves starred sessions into their own section", () => {
     renderSidebar({ sessions, starredIds: ["chat-b"], onToggleStar: vi.fn() });
     const [starredHeader, chatsHeader] = [screen.getByRole("button", { name: "Starred" }), screen.getByRole("button", { name: "Chats" })];
@@ -175,6 +190,7 @@ describe("Sidebar chrome", () => {
     await user.click(screen.getByRole("button", { name: "Account and settings" }));
     await user.click(screen.getByRole("menuitem", { name: /keyboard shortcuts/i }));
     expect(onOpenShortcuts).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("menuitem", { name: "Archived chats" })).not.toBeInTheDocument();
   });
 
   it("collapses to an icon rail that keeps the main actions", async () => {

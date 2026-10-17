@@ -1,6 +1,6 @@
-import { cleanup, render, screen, within, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import type { DesktopCommand, DesktopEvent, ThreadRecordV1 } from "../../../src/desktop/types";
 import { parseUnifiedDiff } from "./diff";
@@ -71,6 +71,8 @@ async function openRepository(api = bridge()) {
 }
 
 describe("HIVE desktop cockpit", () => {
+  afterEach(() => { vi.useRealTimers(); });
+
   it("loads chats and providers on launch without opening a repository", async () => {
     const api = bridge();
     render(<App api={api} />);
@@ -267,7 +269,8 @@ describe("HIVE desktop cockpit", () => {
     expect(within(sidebar).queryByRole("button", { name: "Open plan" })).not.toBeInTheDocument();
   });
 
-  it("renames a chat and deletes the open one after confirmation", async () => {
+  it("renames a chat, then deletes the open one after confirmation with an undo window", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     const summary = { id: "chat-1789200000000-open", title: "Open plan", role: "auto", updatedAt: now, messageCount: 1 };
     const conversation = { id: summary.id, cwd: "C:\\HIVE", role: "auto", ground: false, createdAt: now, updatedAt: now, messages: [{ id: "u1", role: "user" as const, content: "Open plan", at: now }] };
     const api = bridge({
@@ -280,7 +283,7 @@ describe("HIVE desktop cockpit", () => {
         return eventFor(command);
       },
     });
-    const user = userEvent.setup();
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     render(<App api={api} />);
     const sidebar = screen.getByRole("navigation", { name: /global navigation/i });
     await user.click(within(sidebar).getByRole("button", { name: "Chat" }));
@@ -301,15 +304,103 @@ describe("HIVE desktop cockpit", () => {
     await user.click(within(confirm).getByRole("button", { name: "Cancel" }));
     expect(api.request.mock.calls.some(([command]) => command.type === "chat.delete")).toBe(false);
 
-    await user.click(within(sidebar).getByRole("button", { name: "Chat options", description: "Launch plan" }));
+    const deleteOnce = async () => {
+      await user.click(within(sidebar).getByRole("button", { name: "Chat options", description: "Launch plan" }));
+      await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+      await user.click(within(screen.getByRole("dialog", { name: "Delete chat?" })).getByRole("button", { name: "Delete" }));
+    };
+    const deleteSent = () => api.request.mock.calls.some(([command]) => command.type === "chat.delete");
+
+    // Undo inside the window brings the chat back and never reaches the backend.
+    await deleteOnce();
+    expect(within(sidebar).queryByRole("button", { name: "Launch plan" })).not.toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Undo" }));
+    expect(within(sidebar).getByRole("button", { name: "Launch plan" })).toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(7000));
+    expect(deleteSent()).toBe(false);
+
+    // Letting the window lapse deletes it for real.
+    await deleteOnce();
+    expect(await screen.findByText('Deleted "Launch plan"')).toBeInTheDocument();
+    expect(deleteSent()).toBe(false);
+    await act(() => vi.advanceTimersByTimeAsync(7000));
+    await waitFor(() => expect(deleteSent()).toBe(true));
+    expect(api.request.mock.calls.some(([command]) => command.type === "chat.create")).toBe(true);
+    expect(within(sidebar).queryByRole("button", { name: "Launch plan" })).not.toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("sends a pending delete before switching to another project", async () => {
+    const summary = { id: "chat-1789200000000-gone", title: "Scratch", role: "auto", updatedAt: now, messageCount: 1 };
+    const api = bridge({
+      request: async (command) => {
+        if (command.type === "chat.list") return { type: "chat.listed", timestamp: now, conversations: [summary] };
+        if (command.type === "chat.delete") return { type: "chat.listed", timestamp: now, conversations: [] };
+        if (command.type === "repository.list") return { type: "repository.listed", timestamp: now, repositories: [{ path: "C:\\Other", lastOpenedAt: now }] };
+        return eventFor(command);
+      },
+    });
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    const sidebar = screen.getByRole("navigation", { name: /global navigation/i });
+    await user.click(within(sidebar).getByRole("button", { name: "Chat" }));
+    await within(sidebar).findByRole("button", { name: "Scratch" });
+    await user.click(within(sidebar).getByRole("button", { name: "Chat options", description: "Scratch" }));
     await user.click(screen.getByRole("menuitem", { name: "Delete" }));
     await user.click(within(screen.getByRole("dialog", { name: "Delete chat?" })).getByRole("button", { name: "Delete" }));
-    await waitFor(() => {
-      const types = api.request.mock.calls.map(([command]) => command.type);
-      expect(types).toContain("chat.delete");
-      expect(types).toContain("chat.create");
+    await user.click(within(sidebar).getByRole("button", { name: /^Open project Other/ }));
+    await waitFor(() => expect(api.request.mock.calls.some(([command]) => command.type === "repository.open")).toBe(true));
+    const types = api.request.mock.calls.map(([command]) => command.type);
+    expect(types.indexOf("chat.delete")).toBeGreaterThan(-1);
+    expect(types.indexOf("chat.delete")).toBeLessThan(types.indexOf("repository.open"));
+    expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+  });
+
+  it("restores and deletes chats from the Archived chats dialog", async () => {
+    const archived = { id: "chat-1789200000000-arc1", title: "Old research", role: "auto", updatedAt: now, messageCount: 2, archived: true };
+    const api = bridge({
+      request: async (command) => {
+        if (command.type === "chat.list") return { type: "chat.listed", timestamp: now, conversations: [archived] };
+        if (command.type === "chat.unarchive") return { type: "chat.listed", timestamp: now, conversations: [{ ...archived, archived: undefined }] };
+        return eventFor(command);
+      },
     });
-    expect(within(sidebar).queryByRole("button", { name: "Launch plan" })).not.toBeInTheDocument();
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    const sidebar = screen.getByRole("navigation", { name: /global navigation/i });
+    await user.click(within(sidebar).getByRole("button", { name: "Chat" }));
+    await user.click(within(sidebar).getByRole("button", { name: "Account and settings" }));
+    await user.click(screen.getByRole("menuitem", { name: "Archived chats" }));
+    const dialog = screen.getByRole("dialog", { name: "Archived chats" });
+    expect(within(dialog).getByText("Old research")).toBeInTheDocument();
+    expect(within(sidebar).queryByRole("button", { name: "Old research" })).not.toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "Delete Old research" }));
+    expect(screen.getByRole("dialog", { name: "Delete chat?" })).toHaveTextContent("Old research");
+    await user.click(within(screen.getByRole("dialog", { name: "Delete chat?" })).getByRole("button", { name: "Cancel" }));
+
+    await user.click(within(dialog).getByRole("button", { name: "Restore Old research" }));
+    expect(api.request.mock.calls.some(([command]) => command.type === "chat.unarchive" && command.conversationId === archived.id)).toBe(true);
+    expect(await within(sidebar).findByRole("button", { name: "Old research" })).toBeInTheDocument();
+    expect(within(dialog).getByText("No archived chats in this project.")).toBeInTheDocument();
+  });
+
+  it("explains that a project is needed when New chat fails without one, and keeps the launch quiet", async () => {
+    const api = bridge({
+      request: async (command) => {
+        if (command.type === "chat.list" || command.type === "chat.create") {
+          return { type: "request.failed", timestamp: now, requestId: command.requestId, message: "Open a repository before repository-scoped operations.", recoverable: true };
+        }
+        return eventFor(command);
+      },
+    });
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    await waitFor(() => expect(api.request.mock.calls.some(([command]) => command.type === "chat.list")).toBe(true));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "New chat" }));
+    expect(await screen.findByText(/Open a project to start a chat/)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("keeps the latest repository epoch when A resolves after B and rejects late A results", async () => {

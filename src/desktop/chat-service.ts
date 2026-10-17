@@ -198,6 +198,21 @@ export class DesktopChatService {
     return this.list();
   }
 
+  /** Moves an archived conversation back into the active list. */
+  public async unarchive(conversationId: string): Promise<DesktopChatSummary[]> {
+    if (!CHAT_SESSION_ID_PATTERN.test(conversationId)) throw new Error("Chat conversation id is invalid.");
+    const store = this.#store();
+    const destination = store.filePathFor(conversationId);
+    if (await store.load(conversationId)) throw new Error("Chat conversation is already active.");
+    try {
+      await fs.rename(path.join(store.baseDirectory, ARCHIVED_DIRECTORY, path.basename(destination)), destination);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error("Archived chat conversation not found.");
+      throw error;
+    }
+    return this.list();
+  }
+
   /** Sets a custom title without reordering history; a blank title restores the derived one. */
   public async rename(conversationId: string, title: string): Promise<DesktopChatSummary[]> {
     if (this.#controllers.has(conversationId)) throw new Error("Cancel the streaming turn before renaming this conversation.");

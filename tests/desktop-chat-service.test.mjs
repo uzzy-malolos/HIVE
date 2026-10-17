@@ -246,6 +246,22 @@ test("delete removes active and archived conversations permanently", async () =>
   }
 });
 
+test("unarchive restores an archived conversation and rejects unknown or active ids", async () => {
+  const { root, service } = await fixture();
+  try {
+    const conversation = await service.create({});
+    await service.archive(conversation.id);
+    const restored = await service.unarchive(conversation.id);
+    assert.deepEqual(restored.map((entry) => [entry.id, Boolean(entry.archived)]), [[conversation.id, false]]);
+    assert.equal((await service.load(conversation.id)).id, conversation.id);
+    await assert.rejects(() => service.unarchive(conversation.id), /already active/);
+    await assert.rejects(() => service.unarchive("chat-1789200000000-dead"), /not found/);
+    await assert.rejects(() => service.unarchive("../escape"), /invalid/);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("rename and delete refuse a conversation that is still streaming", async () => {
   let release;
   const { root, service } = await fixture({

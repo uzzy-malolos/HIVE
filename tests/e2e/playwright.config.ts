@@ -2,7 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: ".",
-  testMatch: "desktop.spec.ts",
+  testMatch: ["desktop.spec.ts", "sidebar.spec.ts"],
   fullyParallel: false,
   workers: 1,
   forbidOnly: Boolean(process.env.CI),

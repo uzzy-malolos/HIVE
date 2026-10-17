@@ -517,3 +517,15 @@
 .hive-shell .hive-menu-item.is-danger:hover {
   background: var(--hive-error-dim);
 }
+
+.hive-shell .hive-menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: transparent;
+}
+
+.hive-menu-note {
+  padding: 6px 10px 4px;
+  font-size: 11px;
+  color: var(--hive-text-dim);
+}

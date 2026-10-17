@@ -22,6 +22,7 @@ export interface ShellProps {
   starredIds?: string[];
   onToggleStar?: (id: string) => void;
   onOpenShortcuts?: () => void;
+  onOpenArchived?: () => void;
 
   projectName?: string;
   repositoryPath?: string;
@@ -63,6 +64,7 @@ export function Shell({
   starredIds,
   onToggleStar,
   onOpenShortcuts,
+  onOpenArchived,
   projectName,
   repositoryPath,
   sessionTabs,
@@ -114,6 +116,7 @@ export function Shell({
           starredIds={starredIds}
           onToggleStar={onToggleStar}
           onOpenShortcuts={onOpenShortcuts}
+          onOpenArchived={onOpenArchived}
           accountDetail={activeModelName}
           onSelectMode={onSelectMode}
           onCreateTask={onCreateTask}

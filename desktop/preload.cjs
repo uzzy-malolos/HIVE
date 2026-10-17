@@ -45,6 +45,7 @@ const COMMANDS = new Set([
   "chat.archive",
   "chat.rename",
   "chat.delete",
+  "chat.unarchive",
   "chat.route",
   "chat.send",
   "chat.cancel",

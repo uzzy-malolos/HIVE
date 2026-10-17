@@ -37,6 +37,7 @@ test("chat commands validate with well-formed payloads", () => {
   assert.equal(validateDesktopCommand(command("chat.cancel", { conversationId })).type, "chat.cancel");
   assert.equal(validateDesktopCommand(command("chat.rename", { input: { conversationId, title: "Migration plan" } })).type, "chat.rename");
   assert.equal(validateDesktopCommand(command("chat.delete", { conversationId })).type, "chat.delete");
+  assert.equal(validateDesktopCommand(command("chat.unarchive", { conversationId })).type, "chat.unarchive");
   assert.equal(validateDesktopCommand(command("chat.route")).type, "chat.route");
   assert.equal(validateDesktopCommand(command("chat.route", { input: { role: "coding", providerId: "ollama", model: "qwen3" } })).type, "chat.route");
   assert.equal(validateDesktopCommand(command("chat.send", { input: { conversationId, content: "Hello HIVE" } })).type, "chat.send");
@@ -107,7 +108,7 @@ test("chat conversation and message events reject malformed shapes", () => {
 // ---------------------------------------------------------------------------
 
 test("chat commands are registered in the canonical manifest and existing commands still validate", () => {
-  for (const type of ["chat.list", "chat.create", "chat.load", "chat.archive", "chat.rename", "chat.delete", "chat.route", "chat.send", "chat.cancel"]) {
+  for (const type of ["chat.list", "chat.create", "chat.load", "chat.archive", "chat.rename", "chat.delete", "chat.unarchive", "chat.route", "chat.send", "chat.cancel"]) {
     assert.ok(DESKTOP_COMMAND_TYPES.includes(type), `${type} must be in the manifest`);
   }
   assert.equal(validateDesktopCommand(command("thread.create", { input: { title: "Parity check" } })).type, "thread.create");
