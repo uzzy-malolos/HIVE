@@ -1,5 +1,5 @@
 import { execFile as nodeExecFile } from "node:child_process";
-import { promises as fs } from "node:fs";
+import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
 import type { DesktopOpenEditorRequest, DesktopOpenExplorerRequest } from "../types.js";
 
@@ -42,9 +42,62 @@ function defaultExecFile(file: string, args: readonly string[], options?: { cwd?
   return new Promise((resolve, reject) => nodeExecFile(file, [...args], options ?? {}, (error) => error ? reject(error) : resolve()));
 }
 
+type TrustedExecutableName = Parameters<TrustedExecutableResolver["resolve"]>[0];
+
+/** Command names on Linux and macOS; Windows Terminal, Explorer and Visual Studio have no equivalent here. */
+const POSIX_COMMANDS: Partial<Record<TrustedExecutableName, string>> = { git: "git", gh: "gh", code: "code", cursor: "cursor" };
+
+/**
+ * Searched after PATH. Apps launched from the macOS Finder or a Linux desktop entry get a minimal
+ * PATH, so Homebrew, MacPorts and snap installs would otherwise be missed.
+ */
+const POSIX_FALLBACK_DIRECTORIES = ["/usr/local/bin", "/opt/homebrew/bin", "/opt/local/bin", "/usr/bin", "/bin", "/snap/bin"];
+
+export interface SystemTrustedExecutableResolverOptions {
+  platform?: NodeJS.Platform;
+  searchPath?: string;
+  fallbackDirectories?: readonly string[];
+}
+
 export class SystemTrustedExecutableResolver implements TrustedExecutableResolver {
-  public async resolve(name: "code" | "cursor" | "devenv" | "wt" | "explorer" | "git" | "gh", repositoryRoot: string): Promise<string> {
+  readonly #platform: NodeJS.Platform;
+  readonly #searchPath: string;
+  readonly #fallbackDirectories: readonly string[];
+
+  public constructor(options: SystemTrustedExecutableResolverOptions = {}) {
+    this.#platform = options.platform ?? process.platform;
+    this.#searchPath = options.searchPath ?? process.env.PATH ?? "";
+    this.#fallbackDirectories = options.fallbackDirectories ?? POSIX_FALLBACK_DIRECTORIES;
+  }
+
+  public async resolve(name: TrustedExecutableName, repositoryRoot: string): Promise<string> {
     const root = await fs.realpath(repositoryRoot);
+    return this.#platform === "win32" ? this.#resolveWindows(name, root) : this.#resolvePosix(name, root);
+  }
+
+  /**
+   * Walks PATH, then the fallback directories, without a shell. Relative PATH entries are skipped
+   * because they resolve against the working directory, which may be the repository, and any
+   * candidate whose real path lands inside the repository is passed over.
+   */
+  async #resolvePosix(name: TrustedExecutableName, root: string): Promise<string> {
+    const command = POSIX_COMMANDS[name];
+    if (!command) throw new Error(`Trusted executable ${name} is only available on Windows.`);
+    const seen = new Set<string>();
+    for (const directory of [...this.#searchPath.split(path.delimiter), ...this.#fallbackDirectories]) {
+      if (!directory || !path.isAbsolute(directory) || seen.has(directory)) continue;
+      seen.add(directory);
+      try {
+        const candidate = await fs.realpath(path.join(directory, command));
+        if (contained(root, candidate) || !(await fs.stat(candidate)).isFile()) continue;
+        await fs.access(candidate, fsConstants.X_OK);
+        return candidate;
+      } catch { /* Missing or not executable here; try the next directory. */ }
+    }
+    throw new Error(`Trusted executable ${name} is unavailable outside the selected repository.`);
+  }
+
+  async #resolveWindows(name: TrustedExecutableName, root: string): Promise<string> {
     const systemRoot = this.#outside(root, await fs.realpath(process.env.SystemRoot || "C:\\Windows"));
     if (name === "explorer") return this.#outside(root, await fs.realpath(path.join(systemRoot, "explorer.exe")));
     const where = this.#outside(root, await fs.realpath(path.join(systemRoot, "System32", "where.exe")));

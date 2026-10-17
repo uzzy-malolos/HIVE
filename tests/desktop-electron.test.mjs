@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -1267,5 +1267,40 @@ test("chats work without a project in the general store, and repository.close re
   } finally {
     await rm(appData, { recursive: true, force: true });
     await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("trusted executables resolve from PATH on Linux and macOS, never from inside the repository", { skip: process.platform === "win32" }, async () => {
+  const { SystemTrustedExecutableResolver } = await import("../dist/desktop/electron/external-tools.js");
+  const { chmod, mkdir, symlink } = await import("node:fs/promises");
+  const base = await temporaryDirectory("hive-trusted-exec-");
+  try {
+    const repository = path.join(base, "repository");
+    const repoBin = path.join(repository, "bin");
+    const trusted = path.join(base, "trusted-bin");
+    const plain = path.join(base, "plain-bin");
+    for (const directory of [repoBin, trusted, plain]) await mkdir(directory, { recursive: true });
+    const tool = async (directory, name, mode = 0o755) => { const file = path.join(directory, name); await writeFile(file, "#!/bin/sh\n", "utf8"); await chmod(file, mode); return file; };
+    await tool(repoBin, "git");
+    await tool(plain, "git", 0o644);
+    const trustedGit = await tool(trusted, "git");
+    await symlink(path.join(repoBin, "git"), path.join(plain, "gh"));
+
+    // Relative entries, the repository's own bin, and a non-executable file are all passed over.
+    const resolver = new SystemTrustedExecutableResolver({ platform: "linux", searchPath: ["relative/bin", "", repoBin, plain, trusted].join(path.delimiter), fallbackDirectories: [] });
+    assert.equal(await resolver.resolve("git", repository), await realpath(trustedGit));
+
+    // A symlink outside the repository that points into it is still refused.
+    await assert.rejects(() => resolver.resolve("gh", repository), /unavailable outside the selected repository/);
+
+    // Fallback directories cover the minimal PATH of apps launched from Finder or a desktop entry.
+    const fallback = new SystemTrustedExecutableResolver({ platform: "darwin", searchPath: plain, fallbackDirectories: [trusted] });
+    assert.equal(await fallback.resolve("git", repository), await realpath(trustedGit));
+
+    for (const windowsOnly of ["wt", "explorer", "devenv"]) {
+      await assert.rejects(() => resolver.resolve(windowsOnly, repository), /only available on Windows/);
+    }
+  } finally {
+    await rm(base, { recursive: true, force: true });
   }
 });

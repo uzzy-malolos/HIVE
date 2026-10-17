@@ -50,6 +50,8 @@ test.describe.serial("HIVE desktop sidebar", () => {
     const projects = sidebar.getByRole("group", { name: "Projects" });
     await expect(projects.getByRole("button", { name: /^sidebar-fixture \(/ })).toHaveAttribute("aria-current", "true");
     await expect(sidebar.getByRole("button", { name: "Groceries" })).toHaveCount(0);
+    // Opening a project inspects Git; the trusted git lookup must work on every platform.
+    await expect(page.getByRole("alert")).toHaveCount(0);
 
     await sidebar.getByRole("button", { name: "New chat" }).click();
     await expect(sidebar.getByRole("button", { name: "New chat", exact: true }).nth(1)).toBeVisible();
@@ -91,9 +93,7 @@ test.describe.serial("HIVE desktop sidebar", () => {
     await reopened.getByRole("button", { name: /^No project/ }).click();
     await expect(reopened.getByRole("button", { name: "Groceries" })).toBeVisible();
     await expect(reopened.getByRole("button", { name: "Release notes" })).toHaveCount(0);
-    // Off Windows, git.inspect raises a sticky alert because git is located via where.exe; only
-    // failures from leaving the project matter here.
-    await expect(page.getByRole("alert").filter({ hasText: /project|repository|chat/i })).toHaveCount(0);
+    await expect(page.getByRole("alert")).toHaveCount(0);
   });
 
   test("collapses to an icon rail with Ctrl+B and expands from the titlebar", async () => {
