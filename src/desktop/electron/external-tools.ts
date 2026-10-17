@@ -1,5 +1,5 @@
 import { execFile as nodeExecFile } from "node:child_process";
-import { promises as fs } from "node:fs";
+import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
 import type { DesktopOpenEditorRequest, DesktopOpenExplorerRequest } from "../types.js";
 
@@ -43,8 +43,11 @@ function defaultExecFile(file: string, args: readonly string[], options?: { cwd?
 }
 
 export class SystemTrustedExecutableResolver implements TrustedExecutableResolver {
+  public constructor(private readonly platform: NodeJS.Platform = process.platform, private readonly searchPath = process.env.PATH ?? "") {}
+
   public async resolve(name: "code" | "cursor" | "devenv" | "wt" | "explorer" | "git" | "gh", repositoryRoot: string): Promise<string> {
     const root = await fs.realpath(repositoryRoot);
+    if (this.platform !== "win32") return this.#resolvePosix(name, root);
     const systemRoot = this.#outside(root, await fs.realpath(process.env.SystemRoot || "C:\\Windows"));
     if (name === "explorer") return this.#outside(root, await fs.realpath(path.join(systemRoot, "explorer.exe")));
     const where = this.#outside(root, await fs.realpath(path.join(systemRoot, "System32", "where.exe")));
@@ -53,6 +56,20 @@ export class SystemTrustedExecutableResolver implements TrustedExecutableResolve
     const candidates = output.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean);
     for (const candidate of candidates) {
       try { return this.#outside(root, await fs.realpath(candidate)); } catch { /* Try the next system lookup result. */ }
+    }
+    throw new Error(`Trusted executable ${name} is unavailable outside the selected repository.`);
+  }
+
+  // Visual Studio, Windows Terminal and Explorer are Windows-only; the rest come from absolute PATH entries outside the repository.
+  async #resolvePosix(name: "code" | "cursor" | "devenv" | "wt" | "explorer" | "git" | "gh", root: string): Promise<string> {
+    if (name === "devenv" || name === "wt" || name === "explorer") throw new Error(`Trusted executable ${name} is unavailable.`);
+    for (const directory of this.searchPath.split(path.delimiter)) {
+      if (!path.isAbsolute(directory)) continue;
+      try {
+        const candidate = await fs.realpath(path.join(directory, name));
+        await fs.access(candidate, fsConstants.X_OK);
+        if ((await fs.stat(candidate)).isFile()) return this.#outside(root, candidate);
+      } catch { /* Try the next PATH entry. */ }
     }
     throw new Error(`Trusted executable ${name} is unavailable outside the selected repository.`);
   }

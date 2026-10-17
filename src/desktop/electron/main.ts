@@ -55,6 +55,13 @@ function configuredWorkerModule(): string {
   return path.resolve(override);
 }
 
+// Keyring-less Linux test hosts (CI containers, Xvfb) have no OS secret store, so development
+// test runs fall back to Chromium's built-in basic store; secrets still never persist as plaintext.
+function allowTestCredentialStore(): void {
+  if (app.isPackaged || process.env.HIVE_DESKTOP_TESTING !== "1" || process.platform !== "linux") return;
+  if (!safeStorage.isEncryptionAvailable()) safeStorage.setUsePlainTextEncryption(true);
+}
+
 function configuredDevelopmentUrl(): string | undefined {
   const value = process.env.HIVE_DESKTOP_DEV_URL;
   if (!value) return undefined;
@@ -79,6 +86,7 @@ async function start(): Promise<void> {
       }],
     }));
   }
+  allowTestCredentialStore();
   const cipher = new SafeStorageCredentialCipher({
     isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
     encryptString: (value) => safeStorage.encryptString(value),
