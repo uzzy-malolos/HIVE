@@ -287,7 +287,8 @@ test("rollback preserves an externally replaced directory even when its branch a
       await git(root, ["worktree", "remove", "--force", target]);
       await git(root, ["worktree", "add", target, "hive-coder/replaced"]);
       const replacement = await fs.lstat(target, { bigint: true });
-      assert.notEqual(replacement.ino, previous.ino);
+      // ext4 and friends often reuse the freed inode at once; the birth time still marks a new directory.
+      assert.ok(replacement.ino !== previous.ino || replacement.birthtimeNs !== previous.birthtimeNs, "the injected replacement must be a different directory");
       await fs.writeFile(path.join(target, "external-only.txt"), "preserve external data\n");
       throw new Error("Injected external replacement");
     }
@@ -300,4 +301,38 @@ test("rollback preserves an externally replaced directory even when its branch a
   assert.deepEqual(await state(workspace), before);
   assert.equal(await store.load("replaced"), null);
   assert.ok((await git(root, ["worktree", "list", "--porcelain"])).includes(target.replaceAll("\\", "/")));
+});
+
+test("the shared node_modules link stays out of Git in every worktree without duplicating the exclude rule", async (t) => {
+  const repo = async (ignoreLine) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "hive-worktree-deps-"));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    await git(root, ["init", "-b", "main"]);
+    await git(root, ["config", "user.email", "hive@example.test"]);
+    await git(root, ["config", "user.name", "HIVE Test"]);
+    await fs.writeFile(path.join(root, ".gitignore"), `.hivemind/\n${ignoreLine}\n`);
+    await git(root, ["add", "."]); await git(root, ["commit", "-m", "fixture"]);
+    await fs.mkdir(path.join(root, "node_modules"));
+    await fs.writeFile(path.join(root, "node_modules", "dep.js"), "module.exports = 1;\n");
+    return root;
+  };
+  const excludeOf = async (root) => fs.readFile(path.join(root, ".git", "info", "exclude"), "utf8").catch(() => "");
+
+  // A directory-only rule does not cover a symlink, so HIVE adds an anchored rule once.
+  const slashRoot = await repo("node_modules/");
+  const manager = new WorktreeManager(slashRoot);
+  for (const id of ["deps-a", "deps-b"]) {
+    const worktree = await manager.createWorktree(id);
+    assert.equal(await fs.realpath(path.join(worktree, "node_modules")), await fs.realpath(path.join(slashRoot, "node_modules")));
+    assert.equal(await git(worktree, ["status", "--porcelain", "--untracked-files=all"]), "", `${id} must not list the dependency link`);
+  }
+  assert.equal((await excludeOf(slashRoot)).split("\n").filter((line) => line === "/node_modules").length, 1);
+  assert.equal(await git(slashRoot, ["status", "--porcelain", "--untracked-files=all"]), "");
+
+  // A rule that already matches the link leaves the repository's exclude file alone.
+  const plainRoot = await repo("node_modules");
+  const before = await excludeOf(plainRoot);
+  const worktree = await new WorktreeManager(plainRoot).createWorktree("deps-c");
+  assert.equal(await git(worktree, ["status", "--porcelain", "--untracked-files=all"]), "");
+  assert.equal(await excludeOf(plainRoot), before);
 });

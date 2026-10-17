@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants, promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
-import { WorktreeManager, branchNameForTask, validateTaskId, type CreatedManagedWorktree } from "../worktree.js";
+import { WorktreeManager, branchNameForTask, sameDirectoryIdentity, validateTaskId, type CreatedManagedWorktree } from "../worktree.js";
 import { inspectManagedWorktree } from "./runtime.js";
 import { findRepositoryRoot } from "./repository.js";
 import { acquireCodingSessionLeaseAtRoot } from "./session-lease.js";
@@ -221,7 +221,7 @@ async function assertSessionStorage(root: string, sourceId: string): Promise<voi
 
 async function assertOwnedDirectory(directory: string, identity: CreatedManagedWorktree["identity"]): Promise<void> {
   const stat = await fs.lstat(directory, { bigint: true });
-  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.dev !== identity.dev || stat.ino !== identity.ino || path.relative(directory, await fs.realpath(directory)) !== "") throw new Error(`Fork directory was replaced; preserved ${directory} for inspection.`);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || !sameDirectoryIdentity(stat, identity) || path.relative(directory, await fs.realpath(directory)) !== "") throw new Error(`Fork directory was replaced; preserved ${directory} for inspection.`);
 }
 
 async function removeOwnedWorktree(root: string, id: string, expectedPath: string, identity: CreatedManagedWorktree["identity"]): Promise<void> {
