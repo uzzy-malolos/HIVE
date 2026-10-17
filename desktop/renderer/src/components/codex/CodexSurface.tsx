@@ -2,9 +2,9 @@ import React, { useState, useRef, useEffect } from "react";
 import type { DesktopViewState } from "../../state";
 import type { DesktopCommandInput } from "../../bridge";
 import type { DesktopEvent, ThreadMessage } from "../../../../../src/desktop/types";
-import { identifier, preferredScrollBehavior, terminalStatuses } from "../../utils";
+import { identifier, preferredScrollBehavior } from "../../utils";
 import { renderMarkdown } from "../../markdown";
-import { InspectorTabs, type InspectorTab } from "../inspector/InspectorTabs";
+import { InspectorTabs } from "../inspector/InspectorTabs";
 import { AgentActivity } from "./AgentActivity";
 
 export interface CodexSurfaceProps {
@@ -19,8 +19,9 @@ export interface CodexSurfaceProps {
   onPreviewGit?: (action: "commit" | "discard" | "push" | "pull-request") => void;
   onLoadThread?: (threadId: string) => Promise<void>;
   onRewindCheckpoint?: () => Promise<void>;
+  /** Clears the active task so the next message starts a new one. */
+  onNewTask?: () => void;
   onRunAction?: (action: "pause" | "resume" | "cancel") => Promise<void>;
-  onSelectInspectorTab?: (tab: InspectorTab) => void;
   hideInspector?: boolean;
   defaultInspectorTab?: "changes" | "files" | "terminal" | "evidence" | "run";
 }
@@ -37,8 +38,8 @@ export function CodexSurface({
   onSelectFile,
   onToggleDir,
   onPreviewGit,
+  onNewTask,
   onRunAction,
-  onSelectInspectorTab,
   hideInspector = false,
   defaultInspectorTab = "changes",
 }: CodexSurfaceProps) {
@@ -54,7 +55,9 @@ export function CodexSurface({
   const codingSessionId = selectedSessionId ?? run?.codingSessionId ?? latestRun?.codingSessionId ?? null;
   const activeReport = codingSessionId ? reports[codingSessionId] ?? null : null;
   const runStatus = run?.status ?? latestRun?.status ?? null;
-  const runLive = runStatus !== null && !terminalStatuses.has(runStatus);
+  const runLive = Boolean(runStatus && !["completed", "failed", "cancelled", "paused"].includes(runStatus));
+  const runPaused = runStatus === "paused";
+  const pausing = Boolean(codingSessionId && state.pausingSessionId === codingSessionId);
 
   useEffect(() => {
     try {
@@ -74,41 +77,43 @@ export function CodexSurface({
     if (!repositoryRoot) return;
     let threadId = activeThreadId;
     if (!threadId) {
-      // The first message of a Hive Code task creates the task, titled after it.
-      const created = await send({ type: "thread.create", input: { title: task.replace(/\s+/g, " ").slice(0, 80) } });
+      // The first message of a new task names it, the way a first chat message titles a chat.
+      const title = task.split("\n", 1)[0].replace(/\s+/g, " ").trim().slice(0, 80) || "New task";
+      const created = await send({ type: "thread.create", input: { title } });
       if (created.type !== "thread.changed") return;
       threadId = created.thread.id;
     }
-
-    const message: ThreadMessage = {
-      id: identifier("message"),
-      role: "user",
-      content: task,
-      createdAt: new Date().toISOString(),
-    };
-    const res = await send({
-      type: "thread.message.append",
-      input: {
-        threadId,
-        message,
-      },
-    });
-    if (res.type === "request.failed") {
-      return;
-    }
-    setInputTask("");
-    await send({
-      type: "run.start",
-      input: {
-        threadId,
-        repositoryRoot,
-        currentUserMessageId: message.id,
-        options: {
-          mode: composerMode === "plan" ? "plan" : "auto",
-          approvalPolicy: posture === "ask" ? "always" : posture === "autonomous" ? "safe" : "changes",
+    {
+      const message: ThreadMessage = {
+        id: identifier("message"),
+        role: "user",
+        content: task,
+        createdAt: new Date().toISOString(),
+      };
+      const res = await send({
+        type: "thread.message.append",
+        input: {
+          threadId,
+          message,
         },
-      },
-    });
+      });
+      if (res.type === "request.failed") {
+        return;
+      }
+      setInputTask("");
+      await send({
+        type: "run.start",
+        input: {
+          threadId,
+          repositoryRoot,
+          currentUserMessageId: message.id,
+          options: {
+            mode: composerMode === "plan" ? "plan" : "auto",
+            approvalPolicy: posture === "ask" ? "always" : posture === "autonomous" ? "safe" : "changes",
+          },
+        },
+      });
+    }
   };
 
   const displayModel = activeModelName || "deepseek / deepseek-coder";
@@ -123,16 +128,26 @@ export function CodexSurface({
             <span className="hive-mission-title">{missionTitle}</span>
           </div>
 
-          {onRunAction && runLive && (
+          {activeThread && (onRunAction || onNewTask) ? (
             <div className="hive-run-controls" role="group" aria-label="Run controls">
-              {runStatus === "paused" ? (
+              {onRunAction && runLive ? (
+                <button type="button" className="hive-posture-btn" disabled={pausing} onClick={() => void onRunAction("pause")} title="Pause at the next safe checkpoint">
+                  {pausing ? "Pausing..." : "Pause"}
+                </button>
+              ) : null}
+              {onRunAction && runPaused ? (
                 <button type="button" className="hive-posture-btn" onClick={() => void onRunAction("resume")}>Resume</button>
-              ) : (
-                <button type="button" className="hive-posture-btn" disabled={state.pausingSessionId === codingSessionId} onClick={() => void onRunAction("pause")}>Pause</button>
-              )}
-              <button type="button" className="hive-posture-btn" onClick={() => void onRunAction("cancel")}>Cancel</button>
+              ) : null}
+              {onRunAction && (runLive || runPaused) ? (
+                <button type="button" className="hive-posture-btn" onClick={() => void onRunAction("cancel")}>Cancel</button>
+              ) : null}
+              {onNewTask ? (
+                <button type="button" className="hive-posture-btn" onClick={onNewTask} disabled={runLive} title={runLive ? "Wait for the run to stop" : "Start a new Hive Code task"}>
+                  New task
+                </button>
+              ) : null}
             </div>
-          )}
+          ) : null}
 
           <div className="hive-posture-selector" role="group" aria-label="Safety Posture">
             <button
@@ -165,7 +180,7 @@ export function CodexSurface({
         <div className="hive-code-stream">
           <AgentActivity
             events={runtimeEvents}
-            runStatus={runStatus}
+            runStatus={run?.status ?? latestRun?.status ?? null}
             sessionId={selectedSessionId}
           />
 
@@ -257,7 +272,6 @@ export function CodexSurface({
           onSelectFile={onSelectFile}
           onToggleDir={onToggleDir}
           onPreviewGit={onPreviewGit}
-          onSelectTab={onSelectInspectorTab}
         />
       )}
     </div>

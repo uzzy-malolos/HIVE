@@ -5,16 +5,9 @@ import { ChangesView } from "../ChangesView";
 import { FileTree } from "../FileTree";
 import { TerminalOutput } from "../TerminalOutput";
 import { EvidencePanel } from "./EvidencePanel";
-import { terminalStatuses } from "../../utils";
+import { commitBlockedCopy, terminalStatuses } from "../../utils";
 
 export type InspectorTab = "changes" | "files" | "terminal" | "evidence" | "run";
-
-const GIT_ACTIONS = [
-  { action: "commit", label: "commit" },
-  { action: "push", label: "push" },
-  { action: "pull-request", label: "PR" },
-  { action: "discard", label: "discard" },
-] as const;
 
 export interface InspectorTabsProps {
   state: DesktopViewState;
@@ -35,13 +28,8 @@ export function InspectorTabs({
   onSelectFile,
   onToggleDir,
   onPreviewGit,
-  onSelectTab,
 }: InspectorTabsProps) {
-  const [tab, setTabState] = useState<InspectorTab>(defaultTab);
-  const setTab = (next: InspectorTab): void => {
-    setTabState(next);
-    onSelectTab?.(next);
-  };
+  const [tab, setTab] = useState<InspectorTab>(defaultTab);
   const [expandedReview, setExpandedReview] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
@@ -53,8 +41,11 @@ export function InspectorTabs({
   const changedFilesCount = diff?.recordedFiles?.length || 0;
   const sessionLabel = activeRun?.codingSessionId ?? sessionId ?? "—";
   const repositoryLabel = repositoryName(repositoryRoot);
-  // Guarded Git actions apply to a settled run's worktree; each opens a one-use confirmation.
-  const gitActionsAvailable = Boolean(onPreviewGit && activeRun && terminalStatuses.has(activeRun.status));
+  // Guarded Git actions apply to a stopped run's worktree; the backend re-checks everything on confirm.
+  const gitSessionId = activeRun?.codingSessionId ?? sessionId;
+  const canReviewGit = Boolean(onPreviewGit && repositoryRoot && gitSessionId && activeRun && terminalStatuses.has(activeRun.status));
+  const sessionDiff = diff && diff.codingSessionId === gitSessionId ? diff : null;
+  const commitBlocked = sessionDiff ? commitBlockedCopy(sessionDiff.commitEligibility) : "Load this run's changes first.";
 
   return (
     <aside className={`hive-inspector ${expandedReview ? "is-expanded" : ""}`} aria-label="Harness Inspector">
@@ -120,20 +111,15 @@ export function InspectorTabs({
         {/* Tab 1: Changes */}
         {tab === "changes" && (
           <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-            {gitActionsAvailable && (
+            {canReviewGit && onPreviewGit ? (
               <div className="hive-git-actions" role="group" aria-label="Guarded Git actions">
-                {GIT_ACTIONS.map(({ action, label }) => (
-                  <button
-                    key={action}
-                    type="button"
-                    className={`hive-posture-btn${action === "discard" ? " is-danger" : ""}`}
-                    onClick={() => onPreviewGit?.(action)}
-                  >
-                    Preview {label}
-                  </button>
-                ))}
+                <button type="button" className="hive-btn-secondary" disabled={Boolean(commitBlocked)} title={commitBlocked || "Commit exactly the reviewed files"} onClick={() => onPreviewGit("commit")}>Preview commit</button>
+                <button type="button" className="hive-btn-secondary" onClick={() => onPreviewGit("push")}>Preview push</button>
+                <button type="button" className="hive-btn-secondary" onClick={() => onPreviewGit("pull-request")}>Preview PR</button>
+                <button type="button" className="hive-btn-secondary hive-git-discard" onClick={() => onPreviewGit("discard")}>Preview discard</button>
+                {commitBlocked ? <p className="hive-git-note">{commitBlocked}</p> : null}
               </div>
-            )}
+            ) : null}
             {diff && diff.patch ? (
               <ChangesView
                 patch={diff.patch}

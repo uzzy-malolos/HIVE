@@ -7,10 +7,21 @@ const execFileAsync = promisify(execFile);
 const BRANCH_PREFIX = 'hive-coder/';
 const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
+export interface ManagedDirectoryIdentity { dev: bigint; ino: bigint; birthtimeNs: bigint }
+
 export interface CreatedManagedWorktree {
   path: string;
-  identity: { dev: bigint; ino: bigint };
+  identity: ManagedDirectoryIdentity;
   shareDependencies(): Promise<void>;
+}
+
+/**
+ * Whether a directory is still the one HIVE created. Linux filesystems such as ext4 hand a freed
+ * inode straight to the next directory, so a replacement at the same path can share dev and ino;
+ * its birth time still differs. Filesystems without birth times report 0 and fall back to dev+ino.
+ */
+export function sameDirectoryIdentity(stat: { dev: bigint; ino: bigint; birthtimeNs: bigint }, identity: ManagedDirectoryIdentity): boolean {
+  return stat.dev === identity.dev && stat.ino === identity.ino && (identity.birthtimeNs === 0n || stat.birthtimeNs === identity.birthtimeNs);
 }
 
 export function validateTaskId(taskId: string): void {
@@ -116,10 +127,10 @@ export class WorktreeManager {
     try {
       const created = await fs.lstat(worktreePath, { bigint: true });
       if (!created.isDirectory() || created.isSymbolicLink() || path.relative(worktreePath, await fs.realpath(worktreePath)) !== '') throw new Error('New worktree directory identity is invalid.');
-      const identity = { dev: created.dev, ino: created.ino };
+      const identity = { dev: created.dev, ino: created.ino, birthtimeNs: created.birthtimeNs };
       const assertIdentity = async (): Promise<void> => {
         const current = await fs.lstat(worktreePath, { bigint: true });
-        if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== identity.dev || current.ino !== identity.ino || path.relative(worktreePath, await fs.realpath(worktreePath)) !== '') throw new Error('New worktree directory was replaced during initialization.');
+        if (!current.isDirectory() || current.isSymbolicLink() || !sameDirectoryIdentity(current, identity) || path.relative(worktreePath, await fs.realpath(worktreePath)) !== '') throw new Error('New worktree directory was replaced during initialization.');
       };
       return { path: worktreePath, identity, shareDependencies: async () => {
         await assertIdentity();
@@ -143,7 +154,32 @@ export class WorktreeManager {
       fs.lstat(target).catch(() => null),
     ]);
     if (!sourceStat?.isDirectory() || targetStat) return;
+    await this.ignoreDependencyLink(worktreePath);
     await fs.symlink(source, target, process.platform === 'win32' ? 'junction' : 'dir');
+  }
+
+  /**
+   * A `node_modules/` ignore rule only matches directories, and the shared link is a symlink on
+   * Linux and macOS, so Git would list it as untracked: `git add -A` could commit it and a fork
+   * would refuse it. When the link itself is not ignored, add `/node_modules` to the repository's
+   * local exclude file (never committed, and read by every worktree) before creating it.
+   */
+  private async ignoreDependencyLink(worktreePath: string): Promise<void> {
+    try {
+      await execFileAsync(this.gitExecutable, ['check-ignore', '--quiet', '--', 'node_modules'], { cwd: worktreePath, timeout: 10_000 });
+      return;
+    } catch (error) {
+      if (!(error instanceof Error && 'code' in error && error.code === 1)) throw error;
+    }
+    const { stdout } = await execFileAsync(this.gitExecutable, ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: worktreePath, timeout: 10_000 });
+    const excludeFile = path.join(stdout.trim(), 'info', 'exclude');
+    const current = await fs.readFile(excludeFile, 'utf8').catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return '';
+      throw error;
+    });
+    if (current.split(/\r?\n/).some((line) => line.trim() === '/node_modules')) return;
+    await fs.mkdir(path.dirname(excludeFile), { recursive: true });
+    await fs.appendFile(excludeFile, `${current && !current.endsWith('\n') ? '\n' : ''}# HIVE: shared dependency link in coding worktrees\n/node_modules\n`, 'utf8');
   }
 
   public async commitWorktree(taskId: string, message: string, filesToCommit: string[] = []): Promise<void> {

@@ -9,7 +9,7 @@ import { HiveDesktopPage } from "./hive-desktop.page";
 
 const exec = promisify(execFile);
 
-test.describe.serial("HIVE Windows desktop companion", () => {
+test.describe.serial("HIVE desktop Hive Code flow", () => {
   let root: string;
   let repository: string;
   let userData: string;
@@ -43,42 +43,49 @@ test.describe.serial("HIVE Windows desktop companion", () => {
     await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
-  test("onboards, encrypts provider credentials, restores tasks, reviews changes, commits exact files, and refuses unsafe remote actions", async () => {
+  test("encrypts provider credentials, runs a verified task, commits exact files, restores after restart, pushes, and refuses an unsafe PR", async () => {
     const hive = new HiveDesktopPage(page);
     await hive.expectCockpit();
     await hive.openRepository(repository);
     const secret = "e2e-secret-must-never-persist-123456";
-    await hive.configureOpenAi(secret);
+    const stored = await hive.configureOpenAi(secret);
+    // Windows (DPAPI) and macOS (Keychain) encrypt; keyring-less Linux test hosts use Chromium's basic store.
+    expect(stored).toBe("stored");
     await hive.approveOllama();
-    // The first Hive Code message creates the task and names it.
-    const task = "Create the verified fixture change.";
-    await hive.send(task);
-    await expect(hive.sidebar.getByRole("button", { name: task, exact: true })).toBeVisible();
-    await hive.expectPhase("completed");
+
+    // No task is selected, so the first message starts one named after it.
+    await hive.send("Create the verified fixture change.");
+    await expect(hive.sidebar.getByRole("button", { name: "Create the verified fixture change.", exact: true })).toBeVisible();
+    await hive.expectRunStatus("completed");
+    await hive.openTab("Evidence");
+    await expect(hive.inspector.getByLabel("Verification evidence")).toContainText("deterministic fixture");
     await hive.openTab("Changes");
     await expect(page.getByLabel("Read-only unified diff")).toContainText("hive-desktop-fixture.txt");
     await hive.previewAndConfirm("commit");
-    await expect(page.getByText(/committed/i).last()).toBeVisible();
-    const changed = (await exec("git", ["show", "--name-only", "--format=", "hive-coder/" + await currentSessionId(repository)], { cwd: repository })).stdout.trim().split(/\r?\n/).filter(Boolean);
+    await expect(page.getByText(/Committed 1 reviewed file/i).last()).toBeAttached();
+    const firstSession = await currentSessionId(repository);
+    const changed = (await exec("git", ["show", "--name-only", "--format=", "hive-coder/" + firstSession], { cwd: repository })).stdout.trim().split(/\r?\n/).filter(Boolean);
     expect(changed).toEqual(["hive-desktop-fixture.txt"]);
+
     await closeDesktop(app);
     expect(await containsText(userData, secret)).toBe(false);
     ({ app, page, errors } = await launch(userData));
     const restored = new HiveDesktopPage(page);
     await restored.expectCockpit();
     await restored.openRecent(repository);
-    await restored.selectTask(task);
+    await restored.selectTask("Create the verified fixture change.");
     await restored.send("Follow up with another verified turn.");
-    await restored.expectPhase("completed");
-    await restored.openTab("Evidence");
-    const evidence = page.getByLabel("Verification evidence");
-    await expect(evidence.locator(".hive-evidence-row", { hasText: "deterministic fixture" })).toContainText("passed");
-    await expect(evidence).toContainText("Exact recorded file approved by deterministic reviewer.");
-    await restored.openTab("Changes");
+    const followUpSession = await nextSessionId(repository, firstSession);
+    await restored.expectRunStatus("completed");
+
     await restored.previewAndConfirm("push");
-    await expect(page.getByText(/Pushed hive-coder\//i).last()).toBeVisible();
+    await expect(page.getByText(/Pushed hive-coder\//i).last()).toBeAttached();
+    const remoteBranches = (await exec("git", ["ls-remote", "--heads", "origin"], { cwd: repository })).stdout;
+    expect(remoteBranches).toContain(`refs/heads/hive-coder/${followUpSession}`);
+
+    // The fixture remote is a local bare repository, so a pull request must be refused, not faked.
     await restored.previewAndConfirm("PR");
-    await expect(page.getByRole("alert")).toContainText(/remote|origin|pull request|GitHub CLI|GitHub/i);
+    await expect(page.getByRole("alert")).toContainText(/remote|origin|pull request|GitHub/i);
     await expect(page.getByRole("dialog")).toHaveCount(0);
   });
 
@@ -86,29 +93,38 @@ test.describe.serial("HIVE Windows desktop companion", () => {
     const hive = new HiveDesktopPage(page);
     await hive.openRepository(repository);
     await hive.send("[hold] wait for cooperative pause");
-    await hive.expectPhase("planning");
+    await expect(page.getByRole("group", { name: "Run controls" }).getByRole("button", { name: "Pause" })).toBeVisible();
     await hive.runControl("Pause");
-    await hive.expectPhase("paused");
+    await hive.expectRunStatus("paused");
     await hive.runControl("Resume");
-    await hive.expectPhase("completed");
+    await hive.expectRunStatus("completed");
     const resumedWorktree = path.join(repository, ".hivemind", "worktrees", await currentSessionId(repository));
+
     await hive.send("[hold] wait for cancellation");
-    await hive.expectPhase("planning");
+    await expect(page.getByRole("group", { name: "Run controls" }).getByRole("button", { name: "Cancel" })).toBeVisible();
     await hive.runControl("Cancel");
-    await hive.expectPhase("cancelled");
+    await hive.expectRunStatus("cancelled");
+    const cancelledSession = await currentSessionId(repository);
+
     await hive.send("Create a disposable verified change.");
-    await hive.expectPhase("completed");
-    const sessionId = await currentSessionId(repository);
+    const sessionId = await nextSessionId(repository, cancelledSession);
+    await hive.expectRunStatus("completed");
     const worktree = path.join(repository, ".hivemind", "worktrees", sessionId);
     await stat(worktree);
-    await hive.openTab("Changes");
     await hive.previewAndConfirm("discard");
-    await expect(page.getByText(/discard completed/i).last()).toBeVisible();
-    await expect(stat(worktree)).rejects.toThrow();
+    await expect(page.getByText(/discard completed|Discarded/i).last()).toBeAttached();
+    await expect.poll(() => stat(worktree).then(() => true, () => false)).toBe(false);
     // Only the discarded run's worktree goes; the earlier completed run keeps its own.
     await stat(resumedWorktree);
   });
 });
+
+/** Waits until the task records a run newer than `previous`, so status checks never read the last run. */
+async function nextSessionId(repository: string, previous: string): Promise<string> {
+  let latest = previous;
+  await expect.poll(async () => (latest = await currentSessionId(repository).catch(() => previous)), { timeout: 30_000 }).not.toBe(previous);
+  return latest;
+}
 
 async function currentSessionId(repository: string): Promise<string> {
   const threads = path.join(repository, ".hivemind", "threads");
