@@ -60,11 +60,11 @@ export class HiveDesktopPage {
     await expect(this.page.getByRole("dialog")).toHaveCount(0);
   }
 
-  /** Settings must report the provider as connected; Escape closes it because its header sits under the titlebar. */
+  /** Settings must report the provider as connected, and its Done button must be clickable, not under the titlebar. */
   async expectProviderConnected(name: string): Promise<void> {
     const providers = await this.openProviderSettings();
     await expect(this.providerRow(providers, name).locator(".provider-settings-meta")).toHaveText(/· connected$/);
-    await this.page.keyboard.press("Escape");
+    await providers.getByRole("button", { name: "Done" }).click({ timeout: 5_000 });
     await expect(providers).toHaveCount(0);
   }
 

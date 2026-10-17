@@ -1099,6 +1099,8 @@ label {
   box-shadow: var(--shadow-lg);
 }
 .modal-backdrop:has(.settings-modal) {
+  /* Full-page settings sits below the titlebar, which stacks above modals and would hide Done and Back. */
+  top: var(--hive-titlebar-height);
   padding: 0;
   place-items: stretch;
   background: var(--void);
