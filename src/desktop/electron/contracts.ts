@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { DesktopCommand, DesktopEvent, ThreadRecordV1 } from "../types.js";
 import { containsKnownSecret, isCredentialFieldName } from "../../security/secrets.js";
-import { CHAT_SESSION_ID_PATTERN } from "../../chat/session-store.js";
+import { CHAT_SESSION_ID_PATTERN, CHAT_TITLE_MAX_CHARS } from "../../chat/session-store.js";
 import { normalizeChatRole } from "../../chat/roles.js";
 import { DESKTOP_COMMAND_TYPE_SET } from "./command-manifest.js";
 
@@ -238,8 +238,9 @@ function validateChatTool(value: unknown): void {
 }
 
 function validateChatConversation(value: unknown): void {
-  const conversation = exact(value, ["id", "cwd", "role", "ground", "createdAt", "updatedAt", "messages"], "chat conversation");
+  const conversation = optionalExact(value, ["id", "cwd", "role", "ground", "createdAt", "updatedAt", "messages"], ["title"], "chat conversation");
   chatConversationId(conversation.id, "chat conversation id");
+  if (conversation.title !== undefined) string(conversation.title, "chat conversation title", 200);
   absolutePath(conversation.cwd, "chat conversation cwd");
   chatRole(conversation.role, "chat conversation role");
   boolean(conversation.ground, "chat conversation ground flag");
@@ -306,7 +307,7 @@ export function validateDesktopCommand(value: unknown): DesktopCommand {
   const type = string(root.type, "desktop command type", 80);
   if (!DESKTOP_COMMAND_TYPE_SET.has(type)) throw new Error(`Unsupported desktop command type: ${type}.`);
   const requestId = id(root.requestId, "request id");
-  const noPayload = new Set(["repository.list", "thread.list", "provider.list", "credential.list", "chat.list"]);
+  const noPayload = new Set(["repository.list", "repository.close", "thread.list", "provider.list", "credential.list", "chat.list"]);
   if (noPayload.has(type)) exact(root, ["requestId", "type"], "desktop command");
   else switch (type) {
     case "repository.open": exact(root, ["requestId", "type", "repositoryRoot"], "desktop command"); absolutePath(root.repositoryRoot, "repository root"); break;
@@ -344,7 +345,8 @@ export function validateDesktopCommand(value: unknown): DesktopCommand {
     case "external.open-editor": { exact(root, ["requestId", "type", "input"], "desktop command"); const input = optionalExact(root.input, ["repositoryRoot"], ["path", "line", "column"], "editor request"); absolutePath(input.repositoryRoot, "repository root"); if (input.path !== undefined) relativePath(input.path, "editor path"); for (const key of ["line", "column"] as const) if (input[key] !== undefined && (!Number.isSafeInteger(input[key]) || Number(input[key]) < 1 || Number(input[key]) > 10_000_000)) throw new Error(`${key} is invalid.`); break; }
     case "external.open-explorer": { exact(root, ["requestId", "type", "input"], "desktop command"); const input = optionalExact(root.input, ["repositoryRoot"], ["path"], "explorer request"); absolutePath(input.repositoryRoot, "repository root"); if (input.path !== undefined) relativePath(input.path, "explorer path"); break; }
     case "chat.create": { exact(root, ["requestId", "type", "input"], "desktop command"); const input = optionalExact(root.input, [], ["role", "ground"], "chat create input"); if (input.role !== undefined) chatRole(input.role, "chat create role"); if (input.ground !== undefined) boolean(input.ground, "chat create ground flag"); break; }
-    case "chat.load": case "chat.archive": case "chat.cancel": exact(root, ["requestId", "type", "conversationId"], "desktop command"); chatConversationId(root.conversationId, "chat conversation id"); break;
+    case "chat.rename": { exact(root, ["requestId", "type", "input"], "desktop command"); const input = exact(root.input, ["conversationId", "title"], "chat rename input"); chatConversationId(input.conversationId, "chat conversation id"); string(input.title, "chat title", CHAT_TITLE_MAX_CHARS); break; }
+    case "chat.load": case "chat.archive": case "chat.unarchive": case "chat.delete": case "chat.cancel": exact(root, ["requestId", "type", "conversationId"], "desktop command"); chatConversationId(root.conversationId, "chat conversation id"); break;
     case "chat.route": { optionalExact(root, ["requestId", "type"], ["input"], "desktop command"); if (root.input !== undefined) validateChatRouteInput(root.input); break; }
     case "chat.send": {
       exact(root, ["requestId", "type", "input"], "desktop command");

@@ -13,6 +13,7 @@ export type DesktopUiAction =
   | { type: "ui.dismiss-error" }
   | { type: "ui.close-preview" }
   | { type: "ui.repository-opening" }
+  | { type: "ui.new-task" }
   | { type: "ui.rails"; side: "left" | "right" }
   | { type: "ui.rails.set"; rails: { left: boolean; right: boolean } }
   | { type: "ui.mode"; mode: DesktopMode }
@@ -146,6 +147,8 @@ export function reduceDesktopEvent(state: DesktopViewState, event: DesktopEvent 
     case "ui.panel": return event.panel === "tree"
       ? { ...state, showFileTree: !state.showFileTree }
       : { ...state, showTerminal: !state.showTerminal };
+    // Deselect the active Hive Code task so the composer starts a fresh one.
+    case "ui.new-task": return { ...state, activeThreadId: null, selectedSessionId: null, run: null, runtimeEvents: [], pausingSessionId: null, pausingRequestId: null, worker: "idle", diff: null, reports: {}, preview: null, notice: null };
     case "ui.repository-opening": return { ...state, repositoryRoot: null, threads: [], activeThreadId: null, selectedSessionId: null, runtimeEvents: [], run: null, pausingSessionId: null, pausingRequestId: null, worker: "idle", gitStatus: null, diff: null, reports: {}, preview: null, chat: initialChatState(), workspaceListings: {}, workspaceFile: null, selectedWorkspacePath: null, error: null, notice: null };
     case "request.failed": {
       const failedPause = Boolean(state.pausingRequestId && event.requestId === state.pausingRequestId);
@@ -211,7 +214,7 @@ export function reduceDesktopEvent(state: DesktopViewState, event: DesktopEvent 
       const firstUser = event.conversation.messages.find((message) => message.role === "user")?.content ?? "";
       const summary = {
         id: event.conversation.id,
-        title: firstUser.replace(/\s+/g, " ").trim().slice(0, 80) || "New chat",
+        title: event.conversation.title ?? (firstUser.replace(/\s+/g, " ").trim().slice(0, 80) || "New chat"),
         role: event.conversation.role,
         updatedAt: event.conversation.updatedAt,
         messageCount: event.conversation.messages.length,

@@ -359,6 +359,7 @@ type DesktopCommandBase = { requestId: string };
 export type DesktopCommand =
   | (DesktopCommandBase & { type: "repository.list" })
   | (DesktopCommandBase & { type: "repository.open"; repositoryRoot: string })
+  | (DesktopCommandBase & { type: "repository.close" })
   | (DesktopCommandBase & { type: "thread.list" })
   | (DesktopCommandBase & { type: "thread.create"; input: CreateThreadInput })
   | (DesktopCommandBase & { type: "thread.load"; threadId: string })
@@ -399,6 +400,9 @@ export type DesktopCommand =
   | (DesktopCommandBase & { type: "chat.create"; input: { role?: string; ground?: boolean } })
   | (DesktopCommandBase & { type: "chat.load"; conversationId: string })
   | (DesktopCommandBase & { type: "chat.archive"; conversationId: string })
+  | (DesktopCommandBase & { type: "chat.rename"; input: { conversationId: string; title: string } })
+  | (DesktopCommandBase & { type: "chat.delete"; conversationId: string })
+  | (DesktopCommandBase & { type: "chat.unarchive"; conversationId: string })
   | (DesktopCommandBase & {
       type: "chat.route";
       input?: { role?: string; providerId?: string; model?: string };

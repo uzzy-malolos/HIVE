@@ -13,6 +13,8 @@ export interface TitlebarProps {
   onOpenModelPicker?: () => void;
   onOpenSettings?: () => void;
   worker?: string;
+  sidebarOpen?: boolean;
+  onToggleSidebar?: () => void;
 }
 
 const HIVE_MARK = (
@@ -47,12 +49,29 @@ export function Titlebar({
   onOpenModelPicker,
   onOpenSettings,
   worker = "idle",
+  sidebarOpen = true,
+  onToggleSidebar,
 }: TitlebarProps) {
   const showModelPicker = Boolean(onOpenModelPicker || onOpenSettings);
   const hasTabs = Boolean(sessionTabs && sessionTabs.length > 0);
 
   return (
     <header className="hive-titlebar" role="banner">
+      {onToggleSidebar ? (
+        <button
+          type="button"
+          className="hive-titlebar-btn hive-titlebar-sidebar-toggle"
+          onClick={onToggleSidebar}
+          aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
+          aria-pressed={sidebarOpen}
+          title={`${sidebarOpen ? "Collapse" : "Expand"} sidebar (Ctrl+B)`}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <rect x="3" y="3" width="18" height="18" rx="2" />
+            <line x1="9" y1="3" x2="9" y2="21" />
+          </svg>
+        </button>
+      ) : null}
       <div className="hive-titlebar-brand">
         <span className="hive-titlebar-mark" aria-hidden="true">
           {HIVE_MARK}

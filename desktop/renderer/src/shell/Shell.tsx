@@ -1,6 +1,6 @@
 import React from "react";
 import type { DesktopMode } from "../state";
-import { Sidebar, type SidebarSession } from "./Sidebar";
+import { Sidebar, type SidebarRecentProject, type SidebarSession } from "./Sidebar";
 import { Titlebar } from "./Titlebar";
 import type { WorkspaceTab } from "./WorkspaceTabs";
 
@@ -15,6 +15,14 @@ export interface ShellProps {
   onCreateTask: () => void;
   sessions: SidebarSession[];
   onSelectSession: (id: string) => void;
+  onOpenSearch?: () => void;
+  onArchiveSession?: (id: string) => void;
+  onRenameSession?: (id: string, title: string) => void;
+  onDeleteSession?: (id: string) => void;
+  starredIds?: string[];
+  onToggleStar?: (id: string) => void;
+  onOpenShortcuts?: () => void;
+  onOpenArchived?: () => void;
 
   projectName?: string;
   repositoryPath?: string;
@@ -32,7 +40,15 @@ export interface ShellProps {
   status?: ShellStatusItem[];
   setRepositoryPath?: (path: string) => void;
   onOpenRepository?: (path: string) => Promise<void>;
+  onPickRepository?: () => Promise<void>;
+  onCloseRepository?: () => Promise<void>;
+  onOpenProjectTerminal?: () => void;
+  onRevealProject?: () => void;
+  recentProjects?: SidebarRecentProject[];
   busy?: boolean;
+  /** When false the global sidebar shrinks to an icon rail (Ctrl+B or the titlebar toggle). */
+  sidebarOpen?: boolean;
+  onToggleSidebar?: () => void;
 
   children: React.ReactNode;
 }
@@ -44,6 +60,14 @@ export function Shell({
   onCreateTask,
   sessions,
   onSelectSession,
+  onOpenSearch,
+  onArchiveSession,
+  onRenameSession,
+  onDeleteSession,
+  starredIds,
+  onToggleStar,
+  onOpenShortcuts,
+  onOpenArchived,
   projectName,
   repositoryPath,
   sessionTabs,
@@ -59,7 +83,14 @@ export function Shell({
   status,
   setRepositoryPath,
   onOpenRepository,
+  onPickRepository,
+  onCloseRepository,
+  onOpenProjectTerminal,
+  onRevealProject,
+  recentProjects,
   busy,
+  sidebarOpen = true,
+  onToggleSidebar,
   children,
 }: ShellProps) {
   return (
@@ -76,11 +107,23 @@ export function Shell({
         onOpenModelPicker={onOpenModelPicker}
         onOpenSettings={onOpenSettings}
         worker={worker}
+        sidebarOpen={sidebarOpen}
+        onToggleSidebar={onToggleSidebar}
       />
 
       <div className="hive-body">
         <Sidebar
           mode={mode}
+          collapsed={!sidebarOpen}
+          onOpenSearch={onOpenSearch}
+          onArchiveSession={onArchiveSession}
+          onRenameSession={onRenameSession}
+          onDeleteSession={onDeleteSession}
+          starredIds={starredIds}
+          onToggleStar={onToggleStar}
+          onOpenShortcuts={onOpenShortcuts}
+          onOpenArchived={onOpenArchived}
+          accountDetail={activeModelName}
           onSelectMode={onSelectMode}
           onCreateTask={onCreateTask}
           sessions={sessions}
@@ -90,6 +133,11 @@ export function Shell({
           repositoryPath={repositoryPath}
           setRepositoryPath={setRepositoryPath}
           onOpenRepository={onOpenRepository}
+          onPickRepository={onPickRepository}
+          onCloseRepository={onCloseRepository}
+          onOpenProjectTerminal={onOpenProjectTerminal}
+          onRevealProject={onRevealProject}
+          recentProjects={recentProjects}
           busy={busy}
         />
         <main className="hive-main">

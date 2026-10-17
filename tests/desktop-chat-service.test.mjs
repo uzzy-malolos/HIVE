@@ -204,6 +204,81 @@ test("list derives titles, sorts by recency, and archive moves conversations out
   }
 });
 
+test("rename sets a custom title without reordering, and a blank title restores the derived one", async () => {
+  const { root, events, service } = await fixture();
+  try {
+    const older = await service.create({});
+    await service.send({ conversationId: older.id, content: "Plan the migration carefully" });
+    await until(() => events.some((event) => event.type === "chat.completed"), "older completed");
+    const newer = await service.create({});
+
+    const renamed = await service.rename(older.id, "  Migration\n plan  ");
+    assert.deepEqual(renamed.map((entry) => entry.id), [newer.id, older.id], "renaming keeps recency order");
+    assert.equal(renamed.find((entry) => entry.id === older.id).title, "Migration plan");
+    assert.equal((await service.load(older.id)).title, "Migration plan");
+
+    const restored = await service.rename(older.id, "   ");
+    assert.equal(restored.find((entry) => entry.id === older.id).title, "Plan the migration carefully");
+    await assert.rejects(() => service.rename("chat-1789200000000-dead", "Nope"), /not found/);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("delete removes active and archived conversations permanently", async () => {
+  const { root, service } = await fixture();
+  try {
+    const kept = await service.create({});
+    const doomed = await service.create({});
+    const archived = await service.create({});
+    await service.archive(archived.id);
+
+    const afterDelete = await service.delete(doomed.id);
+    assert.deepEqual(afterDelete.map((entry) => entry.id).sort(), [archived.id, kept.id].sort());
+    await assert.rejects(() => service.load(doomed.id), /not found/);
+
+    const afterArchivedDelete = await service.delete(archived.id);
+    assert.deepEqual(afterArchivedDelete.map((entry) => entry.id), [kept.id]);
+    await assert.rejects(() => service.delete(doomed.id), /not found/);
+    await assert.rejects(() => service.delete("../escape"), /invalid/);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("unarchive restores an archived conversation and rejects unknown or active ids", async () => {
+  const { root, service } = await fixture();
+  try {
+    const conversation = await service.create({});
+    await service.archive(conversation.id);
+    const restored = await service.unarchive(conversation.id);
+    assert.deepEqual(restored.map((entry) => [entry.id, Boolean(entry.archived)]), [[conversation.id, false]]);
+    assert.equal((await service.load(conversation.id)).id, conversation.id);
+    await assert.rejects(() => service.unarchive(conversation.id), /already active/);
+    await assert.rejects(() => service.unarchive("chat-1789200000000-dead"), /not found/);
+    await assert.rejects(() => service.unarchive("../escape"), /invalid/);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rename and delete refuse a conversation that is still streaming", async () => {
+  let release;
+  const { root, service } = await fixture({
+    complete: () => new Promise((resolve) => { release = () => resolve({ output: "done", receipt: { role: "coding", providerId: "stub-provider", model: "stub-model", source: "role-assignment", degraded: false, promptTokens: 1, completionTokens: 1, totalTokens: 2, latencyMs: 1 } }); }),
+  });
+  try {
+    const conversation = await service.create({});
+    await service.send({ conversationId: conversation.id, content: "Long answer please" });
+    await until(() => typeof release === "function", "turn started");
+    await assert.rejects(() => service.rename(conversation.id, "New name"), /streaming/);
+    await assert.rejects(() => service.delete(conversation.id), /streaming/);
+    release();
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("create normalizes kebab-case roles and rejects unknown ones", async () => {
   const { root, service } = await fixture();
   try {

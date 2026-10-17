@@ -1,6 +1,6 @@
-import { cleanup, render, screen, within, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import type { DesktopCommand, DesktopEvent, ThreadRecordV1 } from "../../../src/desktop/types";
 import { parseUnifiedDiff } from "./diff";
@@ -71,6 +71,8 @@ async function openRepository(api = bridge()) {
 }
 
 describe("HIVE desktop cockpit", () => {
+  afterEach(() => { vi.useRealTimers(); });
+
   it("loads chats and providers on launch without opening a repository", async () => {
     const api = bridge();
     render(<App api={api} />);
@@ -226,7 +228,209 @@ describe("HIVE desktop cockpit", () => {
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /^codex$/i }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/corrupt and was preserved/i);
-    expect(screen.getByText(/No active work/i)).toBeInTheDocument();
+    expect(screen.getByText(/Open a project to see its tasks/i)).toBeInTheDocument();
+  });
+
+  it("collapses the sidebar to an icon rail with Ctrl+B and expands it from the titlebar", async () => {
+    render(<App api={bridge()} />);
+    const user = userEvent.setup();
+    const sidebar = () => screen.getByRole("navigation", { name: /global navigation/i });
+    expect(sidebar()).not.toHaveAttribute("data-collapsed");
+    await user.keyboard("{Control>}b{/Control}");
+    expect(sidebar()).toHaveAttribute("data-collapsed", "true");
+    await user.click(screen.getByRole("button", { name: "Expand sidebar" }));
+    expect(sidebar()).not.toHaveAttribute("data-collapsed");
+  });
+
+  it("archiving the open chat from its row menu starts a fresh chat", async () => {
+    const summary = { id: "chat-1789200000000-open", title: "Open plan", role: "auto", updatedAt: now, messageCount: 1 };
+    const conversation = { id: summary.id, cwd: "C:\\HIVE", role: "auto", ground: false, createdAt: now, updatedAt: now, messages: [{ id: "u1", role: "user" as const, content: "Open plan", at: now }] };
+    const api = bridge({
+      request: async (command) => {
+        if (command.type === "chat.list") return { type: "chat.listed", timestamp: now, conversations: [summary] };
+        if (command.type === "chat.load") return { type: "chat.changed", timestamp: now, conversation };
+        if (command.type === "chat.archive") return { type: "chat.listed", timestamp: now, conversations: [{ ...summary, archived: true }] };
+        if (command.type === "chat.create") return { type: "chat.changed", timestamp: now, conversation: { ...conversation, id: "chat-1789200000000-next", messages: [] } };
+        return eventFor(command);
+      },
+    });
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    const sidebar = screen.getByRole("navigation", { name: /global navigation/i });
+    await user.click(within(sidebar).getByRole("button", { name: "Chat" }));
+    await user.click(await within(sidebar).findByRole("button", { name: "Open plan" }));
+    await user.click(within(sidebar).getByRole("button", { name: "Chat options", description: "Open plan" }));
+    await user.click(screen.getByRole("menuitem", { name: "Archive" }));
+    await waitFor(() => {
+      const types = api.request.mock.calls.map(([command]) => command.type);
+      expect(types).toContain("chat.archive");
+      expect(types).toContain("chat.create");
+    });
+    expect(within(sidebar).queryByRole("button", { name: "Open plan" })).not.toBeInTheDocument();
+  });
+
+  it("renames a chat, then deletes the open one after confirmation with an undo window", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const summary = { id: "chat-1789200000000-open", title: "Open plan", role: "auto", updatedAt: now, messageCount: 1 };
+    const conversation = { id: summary.id, cwd: "C:\\HIVE", role: "auto", ground: false, createdAt: now, updatedAt: now, messages: [{ id: "u1", role: "user" as const, content: "Open plan", at: now }] };
+    const api = bridge({
+      request: async (command) => {
+        if (command.type === "chat.list") return { type: "chat.listed", timestamp: now, conversations: [summary] };
+        if (command.type === "chat.load") return { type: "chat.changed", timestamp: now, conversation };
+        if (command.type === "chat.rename") return { type: "chat.listed", timestamp: now, conversations: [{ ...summary, title: command.input.title }] };
+        if (command.type === "chat.delete") return { type: "chat.listed", timestamp: now, conversations: [] };
+        if (command.type === "chat.create") return { type: "chat.changed", timestamp: now, conversation: { ...conversation, id: "chat-1789200000000-next", messages: [] } };
+        return eventFor(command);
+      },
+    });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<App api={api} />);
+    const sidebar = screen.getByRole("navigation", { name: /global navigation/i });
+    await user.click(within(sidebar).getByRole("button", { name: "Chat" }));
+    await user.click(await within(sidebar).findByRole("button", { name: "Open plan" }));
+
+    await user.click(within(sidebar).getByRole("button", { name: "Chat options", description: "Open plan" }));
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const input = within(sidebar).getByRole("textbox", { name: "Rename Open plan" });
+    await user.clear(input);
+    await user.type(input, "Launch plan{Enter}");
+    expect(await within(sidebar).findByRole("button", { name: "Launch plan" })).toBeInTheDocument();
+    expect(api.request.mock.calls.some(([command]) => command.type === "chat.rename" && command.input.conversationId === summary.id && command.input.title === "Launch plan")).toBe(true);
+
+    await user.click(within(sidebar).getByRole("button", { name: "Chat options", description: "Launch plan" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+    const confirm = screen.getByRole("dialog", { name: "Delete chat?" });
+    expect(confirm).toHaveTextContent("Launch plan");
+    await user.click(within(confirm).getByRole("button", { name: "Cancel" }));
+    expect(api.request.mock.calls.some(([command]) => command.type === "chat.delete")).toBe(false);
+
+    const deleteOnce = async () => {
+      await user.click(within(sidebar).getByRole("button", { name: "Chat options", description: "Launch plan" }));
+      await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+      await user.click(within(screen.getByRole("dialog", { name: "Delete chat?" })).getByRole("button", { name: "Delete" }));
+    };
+    const deleteSent = () => api.request.mock.calls.some(([command]) => command.type === "chat.delete");
+
+    // Undo inside the window brings the chat back and never reaches the backend.
+    await deleteOnce();
+    expect(within(sidebar).queryByRole("button", { name: "Launch plan" })).not.toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Undo" }));
+    expect(within(sidebar).getByRole("button", { name: "Launch plan" })).toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(7000));
+    expect(deleteSent()).toBe(false);
+
+    // Letting the window lapse deletes it for real.
+    await deleteOnce();
+    expect(await screen.findByText('Deleted "Launch plan"')).toBeInTheDocument();
+    expect(deleteSent()).toBe(false);
+    await act(() => vi.advanceTimersByTimeAsync(7000));
+    await waitFor(() => expect(deleteSent()).toBe(true));
+    expect(api.request.mock.calls.some(([command]) => command.type === "chat.create")).toBe(true);
+    expect(within(sidebar).queryByRole("button", { name: "Launch plan" })).not.toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("sends a pending delete before switching to another project", async () => {
+    const summary = { id: "chat-1789200000000-gone", title: "Scratch", role: "auto", updatedAt: now, messageCount: 1 };
+    const api = bridge({
+      request: async (command) => {
+        if (command.type === "chat.list") return { type: "chat.listed", timestamp: now, conversations: [summary] };
+        if (command.type === "chat.delete") return { type: "chat.listed", timestamp: now, conversations: [] };
+        if (command.type === "repository.list") return { type: "repository.listed", timestamp: now, repositories: [{ path: "C:\\Other", lastOpenedAt: now }] };
+        return eventFor(command);
+      },
+    });
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    const sidebar = screen.getByRole("navigation", { name: /global navigation/i });
+    await user.click(within(sidebar).getByRole("button", { name: "Chat" }));
+    await within(sidebar).findByRole("button", { name: "Scratch" });
+    await user.click(within(sidebar).getByRole("button", { name: "Chat options", description: "Scratch" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+    await user.click(within(screen.getByRole("dialog", { name: "Delete chat?" })).getByRole("button", { name: "Delete" }));
+    await user.click(within(sidebar).getByRole("button", { name: /^Open project Other/ }));
+    await waitFor(() => expect(api.request.mock.calls.some(([command]) => command.type === "repository.open")).toBe(true));
+    const types = api.request.mock.calls.map(([command]) => command.type);
+    expect(types.indexOf("chat.delete")).toBeGreaterThan(-1);
+    expect(types.indexOf("chat.delete")).toBeLessThan(types.indexOf("repository.open"));
+    expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+  });
+
+  it("opens the current project in the terminal and file manager from its row menu", async () => {
+    const api = bridge();
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    api.emit({ type: "desktop.ready", timestamp: now, repositoryRoot: "C:\\HIVE" });
+    const projects = await screen.findByRole("group", { name: "Projects" });
+    await user.click(within(projects).getByRole("button", { name: "Project options" }));
+    await user.click(screen.getByRole("menuitem", { name: "Open in terminal" }));
+    await user.click(within(projects).getByRole("button", { name: "Project options" }));
+    await user.click(screen.getByRole("menuitem", { name: "Show in file manager" }));
+    await waitFor(() => {
+      const commands = api.request.mock.calls.map(([command]) => command);
+      expect(commands).toContainEqual(expect.objectContaining({ type: "external.open-terminal", repositoryRoot: "C:\\HIVE" }));
+      expect(commands).toContainEqual(expect.objectContaining({ type: "external.open-explorer", input: { repositoryRoot: "C:\\HIVE" } }));
+    });
+  });
+
+  it("restores and deletes chats from the Archived chats dialog", async () => {
+    const archived = { id: "chat-1789200000000-arc1", title: "Old research", role: "auto", updatedAt: now, messageCount: 2, archived: true };
+    const api = bridge({
+      request: async (command) => {
+        if (command.type === "chat.list") return { type: "chat.listed", timestamp: now, conversations: [archived] };
+        if (command.type === "chat.unarchive") return { type: "chat.listed", timestamp: now, conversations: [{ ...archived, archived: undefined }] };
+        return eventFor(command);
+      },
+    });
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    const sidebar = screen.getByRole("navigation", { name: /global navigation/i });
+    await user.click(within(sidebar).getByRole("button", { name: "Chat" }));
+    await user.click(within(sidebar).getByRole("button", { name: "Account and settings" }));
+    await user.click(screen.getByRole("menuitem", { name: "Archived chats" }));
+    const dialog = screen.getByRole("dialog", { name: "Archived chats" });
+    expect(within(dialog).getByText("Old research")).toBeInTheDocument();
+    expect(within(sidebar).queryByRole("button", { name: "Old research" })).not.toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "Delete Old research" }));
+    expect(screen.getByRole("dialog", { name: "Delete chat?" })).toHaveTextContent("Old research");
+    await user.click(within(screen.getByRole("dialog", { name: "Delete chat?" })).getByRole("button", { name: "Cancel" }));
+
+    await user.click(within(dialog).getByRole("button", { name: "Restore Old research" }));
+    expect(api.request.mock.calls.some(([command]) => command.type === "chat.unarchive" && command.conversationId === archived.id)).toBe(true);
+    expect(await within(sidebar).findByRole("button", { name: "Old research" })).toBeInTheDocument();
+    expect(within(dialog).getByText("No archived chats in this project.")).toBeInTheDocument();
+  });
+
+  it("switches between a project's chats and chats without a project", async () => {
+    let openRoot: string | null = null;
+    const generalChat = { id: "chat-1789200000000-gen1", title: "Weekend plans", role: "auto", updatedAt: now, messageCount: 1 };
+    const projectChat = { id: "chat-1789200000000-prj1", title: "Refactor notes", role: "auto", updatedAt: now, messageCount: 1 };
+    const api = bridge({
+      request: async (command) => {
+        if (command.type === "repository.list") return { type: "repository.listed", timestamp: now, repositories: [{ path: "C:\\Work", lastOpenedAt: now }] };
+        if (command.type === "repository.open") { openRoot = command.repositoryRoot; return { type: "desktop.ready", timestamp: now, requestId: command.requestId, repositoryRoot: command.repositoryRoot }; }
+        if (command.type === "repository.close") { openRoot = null; return { type: "request.completed", timestamp: now, requestId: command.requestId }; }
+        if (command.type === "chat.list") return { type: "chat.listed", timestamp: now, conversations: openRoot ? [projectChat] : [generalChat] };
+        return eventFor(command);
+      },
+    });
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    const sidebar = screen.getByRole("navigation", { name: /global navigation/i });
+    await user.click(within(sidebar).getByRole("button", { name: "Chat" }));
+    expect(await within(sidebar).findByRole("button", { name: "Weekend plans" })).toBeInTheDocument();
+    expect(within(sidebar).getByRole("button", { name: /^No project/ })).toHaveAttribute("aria-current", "true");
+
+    await user.click(within(sidebar).getByRole("button", { name: /^Open project Work/ }));
+    expect(await within(sidebar).findByRole("button", { name: "Refactor notes" })).toBeInTheDocument();
+    expect(within(sidebar).queryByRole("button", { name: "Weekend plans" })).not.toBeInTheDocument();
+
+    await user.click(within(sidebar).getByRole("button", { name: /^No project/ }));
+    expect(await within(sidebar).findByRole("button", { name: "Weekend plans" })).toBeInTheDocument();
+    expect(within(sidebar).queryByRole("button", { name: "Refactor notes" })).not.toBeInTheDocument();
+    expect(within(sidebar).getByRole("button", { name: /^No project/ })).toHaveAttribute("aria-current", "true");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("keeps the latest repository epoch when A resolves after B and rejects late A results", async () => {
@@ -250,7 +454,7 @@ describe("HIVE desktop cockpit", () => {
     await user.click(screen.getByRole("button", { name: /^codex$/i }));
     const input = screen.getByLabelText(/repository path/i);
     await user.type(input, "C:\\A"); await user.click(screen.getByRole("button", { name: /^open$/i }));
-    await user.clear(input); await user.type(input, "C:\\B"); await user.click(screen.getByRole("button", { name: /open another/i }));
+    await user.clear(input); await user.type(input, "C:\\B"); await user.click(screen.getByRole("button", { name: /^open$/i }));
     // Seed repository B state directly so the epoch-guard assertions below remain valid
     api.emit({ type: "desktop.ready", timestamp: now, requestId: "open-b", repositoryRoot: "C:\\B" });
     api.emit({ type: "thread.listed", timestamp: now, requestId: "list-b", repositoryRoot: "C:\\B", threads: [threadB] });
@@ -264,6 +468,9 @@ describe("HIVE desktop cockpit", () => {
     expect(screen.getByRole("button", { name: /Repository B thread/i })).toBeInTheDocument();
     expect(screen.queryByText(/Late A thread/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Late A error/i)).not.toBeInTheDocument();
+    const projects = screen.getByRole("group", { name: "Projects" });
+    expect(within(projects).getByRole("button", { name: "B (C:\\B)" })).toHaveAttribute("aria-current", "true");
+    await user.click(screen.getByRole("button", { name: "Open project" }));
     expect(screen.getByLabelText(/repository path/i)).toHaveValue("C:\\B");
   });
 
@@ -470,9 +677,11 @@ describe("HIVE desktop cockpit", () => {
     expect(newerButton.compareDocumentPosition(olderButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Archived secret" })).not.toBeInTheDocument();
 
-    await user.type(within(sidebar).getByRole("searchbox", { name: /search chats/i }), "older");
-    expect(within(sidebar).queryByRole("button", { name: "Newer plan" })).not.toBeInTheDocument();
-    await user.click(within(sidebar).getByRole("button", { name: "Older notes" }));
+    await user.click(within(sidebar).getByRole("button", { name: "Search chats" }));
+    const search = screen.getByRole("dialog", { name: "Search chats" });
+    await user.type(within(search).getByRole("textbox", { name: "Search chats and tasks" }), "older");
+    expect(within(search).queryByText("Newer plan")).not.toBeInTheDocument();
+    await user.click(within(search).getByRole("button", { name: /Older notes/ }));
     expect(await screen.findByText("Older answer")).toBeInTheDocument();
     expect(api.request.mock.calls.some(([command]) => command.type === "chat.load" && command.conversationId === olderConversation.id)).toBe(true);
 

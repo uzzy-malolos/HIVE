@@ -1050,6 +1050,7 @@ label {
 .toast.toast-error { border-left: 3px solid var(--error); }
 .toast button { min-height: 20px; padding: 0.1rem 0.3rem; font-size: var(--text-xs); background: transparent; border-color: transparent; color: var(--muted); }
 .toast button:hover { color: #ffffff; }
+.toast button.toast-action { color: var(--hive-violet-soft, #8b5cf6); font-weight: 600; margin-left: auto; }
 
 .error-toast {
   position: fixed;
@@ -4772,3 +4773,9 @@ label {
     transition-duration: .001ms !important;
   }
 }
+
+/* Archived chats dialog */
+.archived-list { list-style: none; margin: 0.5rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.35rem; max-height: 50vh; overflow-y: auto; }
+.archived-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.35rem 0.25rem; border-bottom: 1px solid var(--line-subtle, rgba(255, 255, 255, 0.06)); }
+.archived-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.archived-empty { color: var(--muted); }

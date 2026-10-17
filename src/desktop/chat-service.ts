@@ -15,7 +15,7 @@ import type {
   ChatSessionRecord,
 } from "../chat/types.js";
 import { CHAT_ROLE_META, CHAT_ROLE_SLUGS, classifyTask, normalizeChatRole, type ChatRoleSlug } from "../chat/roles.js";
-import { ChatSessionStore, newChatSessionId, CHAT_SESSION_ID_PATTERN } from "../chat/session-store.js";
+import { ChatSessionStore, newChatSessionId, CHAT_SESSION_ID_PATTERN, CHAT_TITLE_MAX_CHARS } from "../chat/session-store.js";
 import { compactHistory } from "../chat/history.js";
 import { HISTORY_CHAR_BUDGET } from "../chat/chat-cli.js";
 import { buildScoutGrounding } from "../chat/grounding.js";
@@ -54,6 +54,12 @@ export interface DesktopChatServiceOptions {
   /** Injectable agentic-turn runner for tests; defaults to runChatAgentTurn. */
   runAgentTurn?: (input: ChatAgentTurnInput, hooks: ChatAgentTurnHooks) => Promise<ChatAgentTurnResult>;
   clock?: () => string;
+  /**
+   * Whether the current root is an opened project ("project") or the app-data store for chats
+   * without one ("general"). General chats get no Scout grounding or agentic file tools, since
+   * their root is app data rather than a workspace. Defaults to "project".
+   */
+  scope?: () => "project" | "general";
   /** Chunk coalescing window; streaming chunks batch to keep IPC calm. */
   chunkBatchMs?: number;
   chunkBatchChars?: number;
@@ -90,6 +96,7 @@ function renderHistory(history: ChatMessage[]): string {
 }
 
 function conversationTitle(record: ChatSessionRecord): string {
+  if (record.title?.trim()) return record.title.trim();
   const firstUser = record.messages.find((message) => message.role === "user");
   if (!firstUser) return "New chat";
   const flat = firstUser.content.replace(/\s+/g, " ").trim();
@@ -99,6 +106,7 @@ function conversationTitle(record: ChatSessionRecord): string {
 function toConversation(record: ChatSessionRecord): DesktopChatConversation {
   return {
     id: record.id,
+    title: conversationTitle(record),
     cwd: record.cwd,
     role: record.role,
     ground: record.grounded ?? false,
@@ -125,6 +133,7 @@ export class DesktopChatService {
   readonly #buildGrounding: NonNullable<DesktopChatServiceOptions["buildGrounding"]>;
   readonly #runAgentTurn: NonNullable<DesktopChatServiceOptions["runAgentTurn"]>;
   readonly #clock: () => string;
+  readonly #scope: () => "project" | "general";
   readonly #chunkBatchMs: number;
   readonly #chunkBatchChars: number;
   readonly #stores = new Map<string, ChatSessionStore>();
@@ -141,6 +150,7 @@ export class DesktopChatService {
     this.#buildGrounding = options.buildGrounding ?? ((cwd, taskPrompt) => buildScoutGrounding(cwd, taskPrompt));
     this.#runAgentTurn = options.runAgentTurn ?? ((input, hooks) => runChatAgentTurn(input, hooks));
     this.#clock = options.clock ?? (() => new Date().toISOString());
+    this.#scope = options.scope ?? (() => "project");
     this.#chunkBatchMs = options.chunkBatchMs ?? DEFAULT_CHUNK_BATCH_MS;
     this.#chunkBatchChars = options.chunkBatchChars ?? DEFAULT_CHUNK_BATCH_CHARS;
   }
@@ -161,6 +171,7 @@ export class DesktopChatService {
   }
 
   public async create(input: { role?: string; ground?: boolean }): Promise<DesktopChatConversation> {
+    if (input.ground && this.#scope() === "general") throw new Error("Workspace grounding needs an open project.");
     const root = this.#projectRootProvider();
     const store = this.#store();
     const role: ChatRoleSelection = input.role ? this.#resolveRoleSelection(input.role) : "auto";
@@ -196,6 +207,51 @@ export class DesktopChatService {
     return this.list();
   }
 
+  /** Moves an archived conversation back into the active list. */
+  public async unarchive(conversationId: string): Promise<DesktopChatSummary[]> {
+    if (!CHAT_SESSION_ID_PATTERN.test(conversationId)) throw new Error("Chat conversation id is invalid.");
+    const store = this.#store();
+    const destination = store.filePathFor(conversationId);
+    if (await store.load(conversationId)) throw new Error("Chat conversation is already active.");
+    try {
+      await fs.rename(path.join(store.baseDirectory, ARCHIVED_DIRECTORY, path.basename(destination)), destination);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error("Archived chat conversation not found.");
+      throw error;
+    }
+    return this.list();
+  }
+
+  /** Sets a custom title without reordering history; a blank title restores the derived one. */
+  public async rename(conversationId: string, title: string): Promise<DesktopChatSummary[]> {
+    if (this.#controllers.has(conversationId)) throw new Error("Cancel the streaming turn before renaming this conversation.");
+    const record = await this.#loadRecord(conversationId);
+    const flat = title.replace(/\s+/g, " ").trim().slice(0, CHAT_TITLE_MAX_CHARS);
+    const { title: _previous, ...rest } = record;
+    await this.#store().save(flat ? { ...rest, title: flat } : rest, { preserveUpdatedAt: true });
+    return this.list();
+  }
+
+  /** Permanently deletes a conversation (active or archived) and drops its cached engine state. */
+  public async delete(conversationId: string): Promise<DesktopChatSummary[]> {
+    if (!CHAT_SESSION_ID_PATTERN.test(conversationId)) throw new Error("Chat conversation id is invalid.");
+    if (this.#controllers.has(conversationId)) throw new Error("Cancel the streaming turn before deleting this conversation.");
+    const store = this.#store();
+    let removed = await store.delete(conversationId);
+    if (!removed) {
+      try {
+        await fs.unlink(path.join(store.baseDirectory, ARCHIVED_DIRECTORY, `${conversationId}.json`));
+        removed = true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    if (!removed) throw new Error("Chat conversation not found.");
+    this.#engines.delete(conversationId);
+    this.#groundPacks.delete(conversationId);
+    return this.list();
+  }
+
   /** Resolves the provider route for a role (or `auto`) and emits `chat.route.resolved`. */
   public async route(input: DesktopChatRouteInput = {}): Promise<void> {
     const root = this.#projectRootProvider();
@@ -223,6 +279,7 @@ export class DesktopChatService {
     const store = this.#store();
     const record = await this.#loadRecord(input.conversationId);
     if (this.#controllers.has(record.id)) throw new Error("A chat turn is already streaming in this conversation.");
+    if (this.#scope() === "general" && (input.agent || input.ground)) throw new Error("Agentic mode and workspace grounding need an open project.");
 
     const history = record.messages.slice();
     let promptContent = input.content;
@@ -235,7 +292,7 @@ export class DesktopChatService {
       history.push({ role: "user", content: input.content, at: this.#clock() });
     }
 
-    const ground = input.ground ?? record.grounded ?? false;
+    const ground = this.#scope() === "general" ? false : input.ground ?? record.grounded ?? false;
     const selection: ChatRoleSelection = input.role ? this.#resolveRoleSelection(input.role) : record.role;
     const slug = selection === "auto" ? classifyTask(promptContent) : bindingToSlug(selection);
     const override = input.providerId || input.model ? { providerId: input.providerId, model: input.model } : undefined;

@@ -6,6 +6,7 @@ const EVENT_CHANNEL = "hive-desktop:event";
 const COMMANDS = new Set([
   "repository.list",
   "repository.open",
+  "repository.close",
   "thread.list",
   "thread.create",
   "thread.load",
@@ -43,6 +44,9 @@ const COMMANDS = new Set([
   "chat.create",
   "chat.load",
   "chat.archive",
+  "chat.rename",
+  "chat.delete",
+  "chat.unarchive",
   "chat.route",
   "chat.send",
   "chat.cancel",

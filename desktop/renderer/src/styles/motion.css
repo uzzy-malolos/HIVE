@@ -19,7 +19,6 @@
 }
 
 /* Hover: background shift plus a 1px hard offset. No eased transform. */
-.hive-shell button.hive-btn-new-task:hover:not(:disabled),
 .hive-shell button.hive-nav-item:hover:not(:disabled),
 .hive-shell button.hive-session-row:hover:not(:disabled),
 .hive-shell button.hive-titlebar-btn:hover:not(:disabled),
@@ -48,12 +47,6 @@
   box-shadow: 1px 1px 0 0 rgba(255, 255, 255, 0.2);
 }
 
-.hive-shell button.hive-btn-new-task:hover:not(:disabled) {
-  border-color: rgba(124, 58, 237, 0.45);
-  color: #ffffff;
-  box-shadow: 1px 1px 0 0 rgba(139, 92, 246, 0.5);
-}
-
 .hive-shell button.hive-composer-send-btn:hover:not(:disabled),
 .hive-shell button.hive-handoff-btn:hover:not(:disabled),
 .hive-shell button.hive-btn-commit:hover:not(:disabled) {
@@ -80,7 +73,8 @@
 }
 
 .hive-session-list > div.hive-session-row,
-.hive-session-list > div.hive-session-row:hover {
+.hive-session-list > div.hive-session-row:hover,
+.hive-session-list > div.hive-session-empty:hover {
   cursor: default;
   background: transparent;
   color: var(--hive-text-dim);

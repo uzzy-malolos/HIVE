@@ -11,6 +11,9 @@ import type { ChatSessionRecord } from "./types.js";
  */
 export const CHAT_SESSION_ID_PATTERN = /^chat-\d+-[0-9a-f]{4}$/;
 
+/** Longest custom conversation title a session file may carry. */
+export const CHAT_TITLE_MAX_CHARS = 120;
+
 const CHAT_SESSION_DIR = "chat-sessions";
 const SESSION_FILE_SUFFIX = ".json";
 const ACTIVE_SESSION_FILE = "active.json";
@@ -67,6 +70,9 @@ function assertSessionShape(value: unknown, expectedId?: string): asserts value 
     throw new Error("createdAt and updatedAt are required");
   }
   if (!CHAT_ROLES.has(String(value.role))) throw new Error("invalid role");
+  if (value.title !== undefined && (!isNonEmptyString(value.title) || value.title.length > CHAT_TITLE_MAX_CHARS)) {
+    throw new Error("title must be a non-empty string");
+  }
   if (!Array.isArray(value.messages)) throw new Error("messages must be an array");
   for (const message of value.messages) {
     if (!isRecord(message)) throw new Error("message is not an object");
@@ -84,6 +90,11 @@ function assertSessionShape(value: unknown, expectedId?: string): asserts value 
 
 export interface ChatSessionStoreOptions {
   clock?: () => string;
+}
+
+export interface ChatSessionSaveOptions {
+  /** Keep the record's updatedAt, for metadata edits such as a rename that should not reorder history. */
+  preserveUpdatedAt?: boolean;
 }
 
 export class ChatSessionStore {
@@ -104,10 +115,10 @@ export class ChatSessionStore {
     return path.join(this.#baseDirectory, `${sessionId}${SESSION_FILE_SUFFIX}`);
   }
 
-  public async save(record: ChatSessionRecord): Promise<ChatSessionRecord> {
+  public async save(record: ChatSessionRecord, options: ChatSessionSaveOptions = {}): Promise<ChatSessionRecord> {
     validateChatSessionId(record.id);
     assertSessionShape(record);
-    const snapshot: ChatSessionRecord = { ...record, updatedAt: this.#clock() };
+    const snapshot: ChatSessionRecord = { ...record, updatedAt: options.preserveUpdatedAt ? record.updatedAt : this.#clock() };
     assertSessionShape(snapshot);
 
     await fs.mkdir(this.#baseDirectory, { recursive: true });
@@ -218,5 +229,23 @@ export class ChatSessionStore {
 
   public async clearActive(): Promise<void> {
     await fs.rm(path.join(this.#baseDirectory, ACTIVE_SESSION_FILE), { force: true });
+  }
+
+  /** Permanently removes a session file; clears the active pointer when it named this session. Returns false when absent. */
+  public async delete(sessionId: string): Promise<boolean> {
+    const file = this.filePathFor(sessionId);
+    try {
+      const active = (await fs.readFile(path.join(this.#baseDirectory, ACTIVE_SESSION_FILE), "utf8")).trim();
+      if (active === sessionId) await this.clearActive();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    try {
+      await fs.unlink(file);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
   }
 }

@@ -42,6 +42,8 @@ export interface ChatSessionRecord {
   override?: SessionProviderOverride;
   /** Whether Scout grounding was enabled; the pack itself is rebuilt on resume. */
   grounded?: boolean;
+  /** User-chosen title; when absent the title derives from the first user message. */
+  title?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -51,7 +53,7 @@ export interface ChatSessionRecord {
 /** Conversation list entry for the desktop chat rail. */
 export interface DesktopChatSummary {
   id: string;
-  /** First 80 chars of the first user message, derived service-side. */
+  /** User-chosen title, else the first 80 chars of the first user message; derived service-side. */
   title: string;
   role: string;
   updatedAt: string;
@@ -72,6 +74,8 @@ export interface DesktopChatMessage {
 /** Full chat conversation snapshot for the desktop chat surface. */
 export interface DesktopChatConversation {
   id: string;
+  /** Display title derived service-side (custom title or first user message). */
+  title?: string;
   cwd: string;
   role: string;
   ground: boolean;

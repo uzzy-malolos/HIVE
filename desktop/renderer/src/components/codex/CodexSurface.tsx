@@ -19,6 +19,9 @@ export interface CodexSurfaceProps {
   onPreviewGit?: (action: "commit" | "discard" | "push" | "pull-request") => void;
   onLoadThread?: (threadId: string) => Promise<void>;
   onRewindCheckpoint?: () => Promise<void>;
+  /** Clears the active task so the next message starts a new one. */
+  onNewTask?: () => void;
+  onRunAction?: (action: "pause" | "resume" | "cancel") => Promise<void>;
   hideInspector?: boolean;
   defaultInspectorTab?: "changes" | "files" | "terminal" | "evidence" | "run";
 }
@@ -35,6 +38,8 @@ export function CodexSurface({
   onSelectFile,
   onToggleDir,
   onPreviewGit,
+  onNewTask,
+  onRunAction,
   hideInspector = false,
   defaultInspectorTab = "changes",
 }: CodexSurfaceProps) {
@@ -49,6 +54,10 @@ export function CodexSurface({
   const latestRun = activeThread?.runs[activeThread.runs.length - 1];
   const codingSessionId = selectedSessionId ?? run?.codingSessionId ?? latestRun?.codingSessionId ?? null;
   const activeReport = codingSessionId ? reports[codingSessionId] ?? null : null;
+  const runStatus = run?.status ?? latestRun?.status ?? null;
+  const runLive = Boolean(runStatus && !["completed", "failed", "cancelled", "paused"].includes(runStatus));
+  const runPaused = runStatus === "paused";
+  const pausing = Boolean(codingSessionId && state.pausingSessionId === codingSessionId);
 
   useEffect(() => {
     try {
@@ -65,7 +74,16 @@ export function CodexSurface({
     if (!inputTask.trim()) return;
     const task = inputTask.trim();
 
-    if (activeThreadId && repositoryRoot) {
+    if (!repositoryRoot) return;
+    let threadId = activeThreadId;
+    if (!threadId) {
+      // The first message of a new task names it, the way a first chat message titles a chat.
+      const title = task.split("\n", 1)[0].replace(/\s+/g, " ").trim().slice(0, 80) || "New task";
+      const created = await send({ type: "thread.create", input: { title } });
+      if (created.type !== "thread.changed") return;
+      threadId = created.thread.id;
+    }
+    {
       const message: ThreadMessage = {
         id: identifier("message"),
         role: "user",
@@ -75,7 +93,7 @@ export function CodexSurface({
       const res = await send({
         type: "thread.message.append",
         input: {
-          threadId: activeThreadId,
+          threadId,
           message,
         },
       });
@@ -86,7 +104,7 @@ export function CodexSurface({
       await send({
         type: "run.start",
         input: {
-          threadId: activeThreadId,
+          threadId,
           repositoryRoot,
           currentUserMessageId: message.id,
           options: {
@@ -109,6 +127,27 @@ export function CodexSurface({
             <div className="hive-mission-dot" />
             <span className="hive-mission-title">{missionTitle}</span>
           </div>
+
+          {activeThread && (onRunAction || onNewTask) ? (
+            <div className="hive-run-controls" role="group" aria-label="Run controls">
+              {onRunAction && runLive ? (
+                <button type="button" className="hive-posture-btn" disabled={pausing} onClick={() => void onRunAction("pause")} title="Pause at the next safe checkpoint">
+                  {pausing ? "Pausing..." : "Pause"}
+                </button>
+              ) : null}
+              {onRunAction && runPaused ? (
+                <button type="button" className="hive-posture-btn" onClick={() => void onRunAction("resume")}>Resume</button>
+              ) : null}
+              {onRunAction && (runLive || runPaused) ? (
+                <button type="button" className="hive-posture-btn" onClick={() => void onRunAction("cancel")}>Cancel</button>
+              ) : null}
+              {onNewTask ? (
+                <button type="button" className="hive-posture-btn" onClick={onNewTask} disabled={runLive} title={runLive ? "Wait for the run to stop" : "Start a new Hive Code task"}>
+                  New task
+                </button>
+              ) : null}
+            </div>
+          ) : null}
 
           <div className="hive-posture-selector" role="group" aria-label="Safety Posture">
             <button

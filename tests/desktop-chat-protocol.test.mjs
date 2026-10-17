@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 
 import { validateDesktopCommand, validateDesktopEvent } from "../dist/desktop/electron/contracts.js";
@@ -29,16 +30,29 @@ const assistantMessage = {
 
 test("chat commands validate with well-formed payloads", () => {
   assert.equal(validateDesktopCommand(command("chat.list")).type, "chat.list");
+  assert.equal(validateDesktopCommand(command("repository.close")).type, "repository.close");
+  assert.throws(() => validateDesktopCommand(command("repository.close", { repositoryRoot: "/tmp/x" })), /unknown|missing/);
   assert.equal(validateDesktopCommand(command("chat.create", { input: {} })).type, "chat.create");
   assert.equal(validateDesktopCommand(command("chat.create", { input: { role: "heavy-reasoning", ground: true } })).type, "chat.create");
   assert.equal(validateDesktopCommand(command("chat.create", { input: { role: "heavyReasoning" } })).type, "chat.create");
   assert.equal(validateDesktopCommand(command("chat.load", { conversationId })).type, "chat.load");
   assert.equal(validateDesktopCommand(command("chat.archive", { conversationId })).type, "chat.archive");
   assert.equal(validateDesktopCommand(command("chat.cancel", { conversationId })).type, "chat.cancel");
+  assert.equal(validateDesktopCommand(command("chat.rename", { input: { conversationId, title: "Migration plan" } })).type, "chat.rename");
+  assert.equal(validateDesktopCommand(command("chat.delete", { conversationId })).type, "chat.delete");
+  assert.equal(validateDesktopCommand(command("chat.unarchive", { conversationId })).type, "chat.unarchive");
   assert.equal(validateDesktopCommand(command("chat.route")).type, "chat.route");
   assert.equal(validateDesktopCommand(command("chat.route", { input: { role: "coding", providerId: "ollama", model: "qwen3" } })).type, "chat.route");
   assert.equal(validateDesktopCommand(command("chat.send", { input: { conversationId, content: "Hello HIVE" } })).type, "chat.send");
   assert.equal(validateDesktopCommand(command("chat.send", { input: { conversationId, content: "Hello", role: "auto", providerId: "openai", model: "gpt-4o", ground: true } })).type, "chat.send");
+});
+
+test("chat rename and delete reject malformed payloads", () => {
+  assert.throws(() => validateDesktopCommand(command("chat.rename", { input: { conversationId, title: "" } })), /invalid/);
+  assert.throws(() => validateDesktopCommand(command("chat.rename", { input: { conversationId, title: "x".repeat(121) } })), /invalid/);
+  assert.throws(() => validateDesktopCommand(command("chat.rename", { input: { conversationId, title: "ok", extra: true } })), /unknown|missing/);
+  assert.throws(() => validateDesktopCommand(command("chat.rename", { input: { conversationId: "../escape", title: "ok" } })), /invalid/);
+  assert.throws(() => validateDesktopCommand(command("chat.delete", { conversationId: "../escape" })), /invalid/);
 });
 
 test("chat command ids enforce the chat session id pattern", () => {
@@ -72,7 +86,7 @@ test("chat lifecycle events validate in both directions", () => {
   assert.equal(validateDesktopEvent(event("chat.failed", { conversationId, turnId: "turn-abc-1", message: "Cancelled.", recoverable: true })).type, "chat.failed");
   assert.equal(validateDesktopEvent(event("chat.route.resolved", { role: "coding", providerId: "openai", model: "gpt-4o", source: "role-assignment", degraded: false })).type, "chat.route.resolved");
   assert.equal(validateDesktopEvent(event("chat.listed", { conversations: [{ id: conversationId, title: "First prompt", role: "auto", updatedAt: now, messageCount: 2 }] })).type, "chat.listed");
-  assert.equal(validateDesktopEvent(event("chat.changed", { conversation: { id: conversationId, cwd: "C:\\repo", role: "coding", ground: false, createdAt: now, updatedAt: now, messages: [{ id: "message-0", role: "user", content: "hi", at: now }, assistantMessage] } })).type, "chat.changed");
+  assert.equal(validateDesktopEvent(event("chat.changed", { conversation: { id: conversationId, cwd: path.join(path.parse(process.cwd()).root, "repo"), role: "coding", ground: false, createdAt: now, updatedAt: now, messages: [{ id: "message-0", role: "user", content: "hi", at: now }, assistantMessage] } })).type, "chat.changed");
 });
 
 test("chat.chunk rejects over-length chunks, negative seq, and unknown fields", () => {
@@ -97,7 +111,7 @@ test("chat conversation and message events reject malformed shapes", () => {
 // ---------------------------------------------------------------------------
 
 test("chat commands are registered in the canonical manifest and existing commands still validate", () => {
-  for (const type of ["chat.list", "chat.create", "chat.load", "chat.archive", "chat.route", "chat.send", "chat.cancel"]) {
+  for (const type of ["chat.list", "chat.create", "chat.load", "chat.archive", "chat.rename", "chat.delete", "chat.unarchive", "chat.route", "chat.send", "chat.cancel"]) {
     assert.ok(DESKTOP_COMMAND_TYPES.includes(type), `${type} must be in the manifest`);
   }
   assert.equal(validateDesktopCommand(command("thread.create", { input: { title: "Parity check" } })).type, "thread.create");
