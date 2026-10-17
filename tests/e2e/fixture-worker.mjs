@@ -135,4 +135,5 @@ function emit(event) {
   if (event.type === "worker.stopped") requestExit();
 }
 function requestExit() { exitRequested = true; if (commandsInFlight === 0) scheduleExit(); }
-function scheduleExit() { if (exiting) return; exiting = true; setImmediate(() => process.exit(0)); }
+// Like the production worker, give the parent port time to deliver worker.stopped before exiting.
+function scheduleExit() { if (exiting) return; exiting = true; setTimeout(() => process.exit(0), 20).unref(); }

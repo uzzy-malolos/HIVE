@@ -49,8 +49,8 @@ test.describe.serial("HIVE desktop Hive Code flow", () => {
     await hive.openRepository(repository);
     const secret = "e2e-secret-must-never-persist-123456";
     const stored = await hive.configureOpenAi(secret);
-    // Windows (DPAPI) and macOS (Keychain) always encrypt; only a keyring-less Linux may refuse.
-    if (process.platform !== "linux") expect(stored).toBe("stored");
+    // Windows (DPAPI) and macOS (Keychain) encrypt; keyring-less Linux test hosts use Chromium's basic store.
+    expect(stored).toBe("stored");
     await hive.approveOllama();
 
     // No task is selected, so the first message starts one named after it.
@@ -98,6 +98,7 @@ test.describe.serial("HIVE desktop Hive Code flow", () => {
     await hive.expectRunStatus("paused");
     await hive.runControl("Resume");
     await hive.expectRunStatus("completed");
+    const resumedWorktree = path.join(repository, ".hivemind", "worktrees", await currentSessionId(repository));
 
     await hive.send("[hold] wait for cancellation");
     await expect(page.getByRole("group", { name: "Run controls" }).getByRole("button", { name: "Cancel" })).toBeVisible();
@@ -113,6 +114,8 @@ test.describe.serial("HIVE desktop Hive Code flow", () => {
     await hive.previewAndConfirm("discard");
     await expect(page.getByText(/discard completed|Discarded/i).last()).toBeAttached();
     await expect.poll(() => stat(worktree).then(() => true, () => false)).toBe(false);
+    // Only the discarded run's worktree goes; the earlier completed run keeps its own.
+    await stat(resumedWorktree);
   });
 });
 
