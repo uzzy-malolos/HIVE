@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -21,6 +21,7 @@ import {
   DesktopExternalToolService,
   DesktopCliForge,
   ShellWindowRegistry,
+  SystemTrustedExecutableResolver,
   withDesktopCredentialRuntime,
 } from "../dist/desktop/electron/index.js";
 import { DefaultDesktopRunManager } from "../dist/desktop/index.js";
@@ -214,6 +215,21 @@ test("external targets stay inside the selected repository and reject URLs and m
   await assert.rejects(() => resolveWorkspaceTarget(root, "https://evil.test"), /URL|protocol/i);
   await assert.rejects(() => resolveWorkspaceTarget(root, ".git\\config"), /metadata/i);
   await rm(root, { recursive: true, force: true });
+});
+
+test("off Windows, trusted tools come from absolute PATH entries outside the repository", async () => {
+  const root = await temporaryDirectory("hive-posix-tools-repo-");
+  const system = await temporaryDirectory("hive-posix-tools-bin-");
+  for (const directory of [root, system]) {
+    await writeFile(path.join(directory, "git"), "#!/bin/sh\n", { encoding: "utf8", mode: 0o755 });
+  }
+  const resolver = new SystemTrustedExecutableResolver("linux", ["relative-bin", root, system].join(path.delimiter));
+  assert.equal(await resolver.resolve("git", root), await realpath(path.join(system, "git")));
+  await assert.rejects(() => resolver.resolve("gh", root), /unavailable/i);
+  await assert.rejects(() => resolver.resolve("wt", root), /unavailable/i);
+  await assert.rejects(() => new SystemTrustedExecutableResolver("linux", root).resolve("git", root), /unavailable outside/i);
+  await rm(root, { recursive: true, force: true });
+  await rm(system, { recursive: true, force: true });
 });
 
 test("desktop launches ignore malicious repository executables and use resolved absolute tools", async () => {

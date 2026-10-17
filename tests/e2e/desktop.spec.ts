@@ -43,15 +43,17 @@ test.describe.serial("HIVE Windows desktop companion", () => {
     await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
-  test("onboards, encrypts provider credentials, restores threads, reviews changes, commits exact files, and refuses unsafe remote actions", async () => {
+  test("onboards, encrypts provider credentials, restores tasks, reviews changes, commits exact files, and refuses unsafe remote actions", async () => {
     const hive = new HiveDesktopPage(page);
     await hive.expectCockpit();
     await hive.openRepository(repository);
     const secret = "e2e-secret-must-never-persist-123456";
     await hive.configureOpenAi(secret);
     await hive.approveOllama();
-    await hive.createThread("Desktop release flow");
-    await hive.send("Create the verified fixture change.");
+    // The first Hive Code message creates the task and names it.
+    const task = "Create the verified fixture change.";
+    await hive.send(task);
+    await expect(hive.sidebar.getByRole("button", { name: task, exact: true })).toBeVisible();
     await hive.expectPhase("completed");
     await hive.openTab("Changes");
     await expect(page.getByLabel("Read-only unified diff")).toContainText("hive-desktop-fixture.txt");
@@ -59,18 +61,19 @@ test.describe.serial("HIVE Windows desktop companion", () => {
     await expect(page.getByText(/committed/i).last()).toBeVisible();
     const changed = (await exec("git", ["show", "--name-only", "--format=", "hive-coder/" + await currentSessionId(repository)], { cwd: repository })).stdout.trim().split(/\r?\n/).filter(Boolean);
     expect(changed).toEqual(["hive-desktop-fixture.txt"]);
-    await app.close();
+    await closeDesktop(app);
     expect(await containsText(userData, secret)).toBe(false);
     ({ app, page, errors } = await launch(userData));
     const restored = new HiveDesktopPage(page);
     await restored.expectCockpit();
     await restored.openRecent(repository);
-    await restored.selectThread("Desktop release flow");
-    await restored.openTab("Conversation");
+    await restored.selectTask(task);
     await restored.send("Follow up with another verified turn.");
     await restored.expectPhase("completed");
-    await restored.openTab("Report");
-    await expect(page.getByRole("heading", { name: "Deterministic desktop run complete" })).toBeVisible();
+    await restored.openTab("Evidence");
+    const evidence = page.getByLabel("Verification evidence");
+    await expect(evidence.locator(".hive-evidence-row", { hasText: "deterministic fixture" })).toContainText("passed");
+    await expect(evidence).toContainText("Exact recorded file approved by deterministic reviewer.");
     await restored.openTab("Changes");
     await restored.previewAndConfirm("push");
     await expect(page.getByText(/Pushed hive-coder\//i).last()).toBeVisible();
@@ -82,16 +85,16 @@ test.describe.serial("HIVE Windows desktop companion", () => {
   test("cooperatively pauses and resumes, cancels, then discards only the latest HIVE worktree", async () => {
     const hive = new HiveDesktopPage(page);
     await hive.openRepository(repository);
-    await hive.createThread("Control flow");
     await hive.send("[hold] wait for cooperative pause");
     await hive.expectPhase("planning");
-    await page.getByRole("button", { name: "Pause" }).click();
+    await hive.runControl("Pause");
     await hive.expectPhase("paused");
-    await page.getByRole("button", { name: "Resume" }).click();
+    await hive.runControl("Resume");
     await hive.expectPhase("completed");
+    const resumedWorktree = path.join(repository, ".hivemind", "worktrees", await currentSessionId(repository));
     await hive.send("[hold] wait for cancellation");
     await hive.expectPhase("planning");
-    await page.getByRole("button", { name: "Cancel" }).click();
+    await hive.runControl("Cancel");
     await hive.expectPhase("cancelled");
     await hive.send("Create a disposable verified change.");
     await hive.expectPhase("completed");
@@ -102,6 +105,8 @@ test.describe.serial("HIVE Windows desktop companion", () => {
     await hive.previewAndConfirm("discard");
     await expect(page.getByText(/discard completed/i).last()).toBeVisible();
     await expect(stat(worktree)).rejects.toThrow();
+    // Only the discarded run's worktree goes; the earlier completed run keeps its own.
+    await stat(resumedWorktree);
   });
 });
 
