@@ -19,6 +19,8 @@ export interface DesktopUiPrefs {
   composerSendWithEnter?: boolean;
   /** Enabled / toggled state for individual model IDs: { [modelId]: boolean }. */
   enabledModels?: Record<string, boolean>;
+  /** Sidebar session ids ("chat-…" / "thread-…") pinned to the Starred section. */
+  starred?: string[];
 }
 
 const STORAGE_KEY = "hive.desktop.ui.v1";

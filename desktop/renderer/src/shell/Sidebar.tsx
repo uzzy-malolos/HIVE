@@ -8,7 +8,6 @@ export interface SidebarSession {
   kind: "chat" | "coder";
   active: boolean;
   status?: string;
-  /** ISO timestamp used to group the list into Today / Yesterday / Previous 7 days / Older. */
   updatedAt?: string;
 }
 
@@ -21,11 +20,17 @@ export interface SidebarProps {
   mode: DesktopMode;
   onSelectMode: (mode: DesktopMode) => void;
   onCreateTask: () => void;
+  /** Opens the chat/task search dialog. */
   onOpenSearch?: () => void;
   sessions: SidebarSession[];
   onSelectSession: (id: string) => void;
+  onArchiveSession?: (id: string) => void;
+  /** Session ids pinned to the Starred section. */
+  starredIds?: string[];
+  onToggleStar?: (id: string) => void;
   onOpenUsage: () => void;
   onOpenSettings: () => void;
+  onOpenShortcuts?: () => void;
   repositoryPath?: string;
   setRepositoryPath?: (path: string) => void;
   onOpenRepository?: (path: string) => Promise<void>;
@@ -33,33 +38,13 @@ export interface SidebarProps {
   onPickRepository?: () => Promise<void>;
   recentProjects?: SidebarRecentProject[];
   busy?: boolean;
+  /** Icon-only rail, as ChatGPT and Claude show when the sidebar is closed. */
+  collapsed?: boolean;
+  /** Secondary line on the account button, e.g. the active model. */
+  accountDetail?: string;
 }
 
 const RECENT_PROJECT_LIMIT = 5;
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-type SessionGroup = { label: string; sessions: SidebarSession[] };
-
-/** Buckets already-sorted sessions by local calendar day, preserving order. */
-export function groupSessionsByDate(sessions: SidebarSession[], now: Date = new Date()): SessionGroup[] {
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const buckets: SessionGroup[] = [
-    { label: "Today", sessions: [] },
-    { label: "Yesterday", sessions: [] },
-    { label: "Previous 7 days", sessions: [] },
-    { label: "Older", sessions: [] },
-  ];
-  for (const session of sessions) {
-    const time = session.updatedAt ? Date.parse(session.updatedAt) : Number.NaN;
-    const index = !Number.isFinite(time) ? 3
-      : time >= startOfToday ? 0
-      : time >= startOfToday - DAY_MS ? 1
-      : time >= startOfToday - 7 * DAY_MS ? 2
-      : 3;
-    buckets[index].sessions.push(session);
-  }
-  return buckets.filter((bucket) => bucket.sessions.length > 0);
-}
 
 const GLYPHS: Record<string, React.ReactNode> = {
   chat: (
@@ -94,8 +79,55 @@ const GLYPHS: Record<string, React.ReactNode> = {
       <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
     </svg>
   ),
+  compose: (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+  ),
+  search: (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-3.5-3.5" />
+    </svg>
+  ),
+  plus: (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  ),
+  more: (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="5" cy="12" r="1" />
+      <circle cx="12" cy="12" r="1" />
+      <circle cx="19" cy="12" r="1" />
+    </svg>
+  ),
+  star: (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3l-5.6 2.9 1.1-6.2L3 9.6l6.2-.9Z" />
+    </svg>
+  ),
+  archive: (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="4" rx="1" />
+      <path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8M10 12h4" />
+    </svg>
+  ),
+  keyboard: (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="2" y="6" width="20" height="12" rx="2" />
+      <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10" />
+    </svg>
+  ),
+  chevron: (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  ),
 };
 
+type SectionKey = "projects" | "starred" | "sessions";
 
 export function Sidebar({
   mode,
@@ -104,39 +136,55 @@ export function Sidebar({
   onOpenSearch,
   sessions,
   onSelectSession,
+  onArchiveSession,
+  starredIds = [],
+  onToggleStar,
   onOpenUsage,
   onOpenSettings,
+  onOpenShortcuts,
   repositoryPath = "",
   setRepositoryPath,
   onOpenRepository,
   onPickRepository,
   recentProjects = [],
   busy = false,
+  collapsed = false,
+  accountDetail,
 }: SidebarProps) {
   const [path, setPath] = useState(repositoryPath);
-  const [switcherOpen, setSwitcherOpen] = useState(!repositoryPath);
-  const [query, setQuery] = useState("");
+  const [addingProject, setAddingProject] = useState(!repositoryPath && recentProjects.length === 0);
+  const [closedSections, setClosedSections] = useState<Record<SectionKey, boolean>>({ projects: false, starred: false, sessions: false });
+  const [menu, setMenu] = useState<string | null>(null);
 
   // Follow the open project when it changes from elsewhere (palette, picker, startup).
   useEffect(() => {
     if (!repositoryPath) return;
     setPath(repositoryPath);
-    setSwitcherOpen(false);
+    setAddingProject(false);
   }, [repositoryPath]);
 
+  // Popover menus close on an outside click or Escape, like the reference sidebars.
+  useEffect(() => {
+    if (!menu) return;
+    const onPointer = (event: MouseEvent) => {
+      if (!(event.target instanceof Element) || !event.target.closest("[data-sidebar-menu]")) setMenu(null);
+    };
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setMenu(null); };
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onPointer); document.removeEventListener("keydown", onKey); };
+  }, [menu]);
+
   const listsTasks = mode === "coder";
-  const noun = listsTasks ? "tasks" : "chats";
-  const needle = query.trim().toLowerCase();
-  const visibleSessions = needle
-    ? sessions.filter((session) => session.title.toLowerCase().includes(needle))
-    : sessions;
-  const groups = groupSessionsByDate(visibleSessions);
+  const starred = new Set(starredIds);
+  const starredSessions = sessions.filter((session) => starred.has(session.id));
+  const otherSessions = sessions.filter((session) => !starred.has(session.id));
   const currentKey = repositoryPath.toLowerCase();
   const otherProjects = recentProjects
     .filter((project) => project.path.toLowerCase() !== currentKey)
     .slice(0, RECENT_PROJECT_LIMIT);
-  const currentName = repositoryPath ? projectName(repositoryPath) : busy ? "Opening project..." : "No project open";
 
+  const toggleSection = (key: SectionKey) => setClosedSections((current) => ({ ...current, [key]: !current[key] }));
   const openProject = (target: string): void => {
     const value = target.trim();
     if (!value || !onOpenRepository) return;
@@ -144,122 +192,159 @@ export function Sidebar({
     void onOpenRepository(value);
   };
 
-  const surfaceItems: { key: DesktopMode; label: string; ariaLabel: string; glyph: React.ReactNode }[] = [
-    { key: "chat", label: "HiveChat", ariaLabel: "Chat", glyph: GLYPHS.chat },
-    { key: "coder", label: "Hive Code", ariaLabel: "Codex", glyph: GLYPHS.coder },
-    { key: "split", label: "Split Workspace", ariaLabel: "Split Workspace", glyph: GLYPHS.split },
+  const topItems: { key: string; label: string; ariaLabel: string; glyph: React.ReactNode; active?: boolean; title?: string; onClick: () => void }[] = [
+    { key: "new", label: "New chat", ariaLabel: "New chat", glyph: GLYPHS.compose, title: "New chat (Ctrl+Shift+O)", onClick: onCreateTask },
+    ...(onOpenSearch ? [{ key: "search", label: listsTasks ? "Search tasks" : "Search chats", ariaLabel: listsTasks ? "Search tasks" : "Search chats", glyph: GLYPHS.search, title: "Search (Ctrl+Shift+F)", onClick: onOpenSearch }] : []),
+    { key: "chat", label: "HiveChat", ariaLabel: "Chat", glyph: GLYPHS.chat, active: mode === "chat", onClick: () => onSelectMode("chat") },
+    { key: "coder", label: "Hive Code", ariaLabel: "Codex", glyph: GLYPHS.coder, active: mode === "coder", onClick: () => onSelectMode("coder") },
+    { key: "split", label: "Split Workspace", ariaLabel: "Split Workspace", glyph: GLYPHS.split, active: mode === "split", onClick: () => onSelectMode("split") },
   ];
+
+  const accountMenu = (
+    <div className="hive-sidebar-account" data-sidebar-menu>
+      <button
+        type="button"
+        className={`hive-account-btn${menu === "account" ? " is-open" : ""}`}
+        onClick={() => setMenu((current) => current === "account" ? null : "account")}
+        aria-haspopup="menu"
+        aria-expanded={menu === "account"}
+        aria-label="Account and settings"
+        title={collapsed ? "Account and settings" : undefined}
+      >
+        <span className="hive-account-avatar" aria-hidden="true">H</span>
+        {!collapsed && (
+          <span className="hive-account-text">
+            <span className="hive-account-name">HIVE</span>
+            {accountDetail ? <span className="hive-account-detail">{accountDetail}</span> : null}
+          </span>
+        )}
+      </button>
+      {menu === "account" && (
+        <div className="hive-sidebar-menu hive-account-menu" role="menu" aria-label="Account">
+          <button type="button" role="menuitem" className="hive-menu-item" onClick={() => { setMenu(null); onOpenSettings(); }}>
+            <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.settings}</span>Settings
+          </button>
+          <button type="button" role="menuitem" className={`hive-menu-item${mode === "usage" ? " is-active" : ""}`} onClick={() => { setMenu(null); onOpenUsage(); }}>
+            <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.usage}</span>Usage &amp; Telemetry
+          </button>
+          {onOpenShortcuts && (
+            <button type="button" role="menuitem" className="hive-menu-item" onClick={() => { setMenu(null); onOpenShortcuts(); }}>
+              <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.keyboard}</span>Keyboard shortcuts
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
+  if (collapsed) {
+    return (
+      <nav className="hive-sidebar is-collapsed" aria-label="Global Navigation" data-collapsed="true">
+        <div className="hive-sidebar-rail">
+          {topItems.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              className={`hive-nav-item hive-rail-item${item.active ? " is-active" : ""}`}
+              onClick={item.onClick}
+              aria-label={item.ariaLabel}
+              aria-pressed={item.active}
+              title={item.title ?? item.label}
+            >
+              <span className="hive-nav-icon" aria-hidden="true">{item.glyph}</span>
+            </button>
+          ))}
+        </div>
+        <div className="hive-sidebar-footer">{accountMenu}</div>
+      </nav>
+    );
+  }
+
+  const sectionHeader = (key: SectionKey, label: string, action?: React.ReactNode) => (
+    <div className="hive-section-header">
+      <button
+        type="button"
+        className="hive-section-toggle"
+        onClick={() => toggleSection(key)}
+        aria-expanded={!closedSections[key]}
+      >
+        <span>{label}</span>
+        <span className={`hive-section-chevron${closedSections[key] ? " is-closed" : ""}`} aria-hidden="true">{GLYPHS.chevron}</span>
+      </button>
+      {action}
+    </div>
+  );
+
+  const sessionRow = (session: SidebarSession) => {
+    const isStarred = starred.has(session.id);
+    const menuId = `session:${session.id}`;
+    const hasMenu = Boolean(onToggleStar || onArchiveSession);
+    const titleId = `hive-session-title-${session.id}`;
+    const optionsLabel = session.kind === "coder" ? "Task options" : "Chat options";
+    return (
+      <div key={session.id} className={`hive-session-item${menu === menuId ? " is-menu-open" : ""}`} data-sidebar-menu={menu === menuId ? true : undefined}>
+        <button
+          type="button"
+          className={`hive-session-row${session.active ? " is-active" : ""}`}
+          onClick={() => onSelectSession(session.id)}
+          title={session.title}
+          aria-current={session.active ? "page" : undefined}
+        >
+          <span id={titleId} className="hive-session-title">{session.title}</span>
+          {session.status ? (
+            <span className={`hive-session-status is-${session.status.toLowerCase()}`}>{session.status}</span>
+          ) : null}
+        </button>
+        {hasMenu && (
+          <button
+            type="button"
+            className="hive-session-more"
+            onClick={() => setMenu((current) => current === menuId ? null : menuId)}
+            aria-haspopup="menu"
+            aria-expanded={menu === menuId}
+            aria-label={optionsLabel}
+            aria-describedby={titleId}
+            data-sidebar-menu
+          >
+            {GLYPHS.more}
+          </button>
+        )}
+        {menu === menuId && (
+          <div className="hive-sidebar-menu hive-session-menu" role="menu" aria-label={optionsLabel} aria-describedby={titleId} data-sidebar-menu>
+            {onToggleStar && (
+              <button type="button" role="menuitem" className="hive-menu-item" onClick={() => { setMenu(null); onToggleStar(session.id); }}>
+                <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.star}</span>{isStarred ? "Unstar" : "Star"}
+              </button>
+            )}
+            {onArchiveSession && (
+              <button type="button" role="menuitem" className="hive-menu-item" onClick={() => { setMenu(null); onArchiveSession(session.id); }}>
+                <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.archive}</span>Archive
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const emptyCopy = listsTasks
+    ? repositoryPath ? "No tasks yet" : "Open a project to see its tasks"
+    : "No chats yet";
 
   return (
     <nav className="hive-sidebar" aria-label="Global Navigation">
       <div className="hive-sidebar-scroll">
-        {/* Zone A: Primary Actions */}
-        <div className="hive-sidebar-actions">
-          <button type="button" className="hive-btn-new-task" onClick={onCreateTask} title="New chat (Ctrl+Shift+O)">
-            <span className="hive-btn-new-task__icon" aria-hidden="true">+</span>
-            <span className="hive-btn-new-task__label">New chat</span>
-          </button>
-          <label className="hive-btn-search hive-chat-search">
-            <input
-              type="search"
-              className="hive-chat-search-input"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder={`Search ${noun}`}
-              aria-label={`Search ${noun}`}
-              onFocus={() => onOpenSearch?.()}
-            />
-          </label>
-        </div>
-
-        {/* Project switcher: current folder, recent folders, native picker, typed path */}
-        {onOpenRepository && (
-          <div className="hive-sidebar-group hive-project">
-            <div className="hive-sidebar-label">Project</div>
-            <button
-              type="button"
-              className={`hive-project-current${switcherOpen ? " is-open" : ""}`}
-              onClick={() => setSwitcherOpen((open) => !open)}
-              aria-expanded={switcherOpen}
-              aria-controls="hive-project-switcher"
-              aria-label={repositoryPath ? `Switch project, current ${currentName}` : "Choose a project"}
-              title={repositoryPath || undefined}
-            >
-              <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.folder}</span>
-              <span className="hive-project-text">
-                <span className="hive-project-name">{currentName}</span>
-                {repositoryPath ? <span className="hive-project-path">{repositoryPath}</span> : null}
-              </span>
-              <span className="hive-project-chevron" aria-hidden="true">▾</span>
-            </button>
-
-            {switcherOpen && (
-              <div id="hive-project-switcher" className="hive-project-switcher">
-                {otherProjects.length > 0 && (
-                  <div className="hive-project-recent" role="group" aria-label="Recent projects">
-                    <div className="hive-project-sublabel">Recent</div>
-                    {otherProjects.map((project) => (
-                      <button
-                        key={project.path}
-                        type="button"
-                        className="hive-project-row"
-                        onClick={() => openProject(project.path)}
-                        aria-label={`Open project ${projectName(project.path)} (${project.path})`}
-                        title={project.path}
-                      >
-                        <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.folder}</span>
-                        <span className="hive-project-text">
-                          <span className="hive-project-name">{projectName(project.path)}</span>
-                          <span className="hive-project-path">{project.path}</span>
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {onPickRepository && (
-                  <button type="button" className="hive-btn-secondary hive-project-browse" onClick={() => void onPickRepository()}>
-                    Browse for folder...
-                  </button>
-                )}
-
-                <form
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    openProject(path);
-                  }}
-                >
-                  <div className="hive-repo-row">
-                    <input
-                      id="sidebar-repo-path"
-                      value={path}
-                      onChange={(event) => setPath(event.target.value)}
-                      placeholder={"C:\\source\\project"}
-                      aria-label="Repository path"
-                      className="hive-form-input hive-repo-input"
-                      spellCheck={false}
-                    />
-                    <button type="submit" disabled={!path.trim()} className="hive-btn-secondary hive-repo-open">
-                      Open
-                    </button>
-                  </div>
-                </form>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Zone B: Primary Surfaces */}
+        {/* Primary actions and surfaces, as plain icon rows */}
         <div className="hive-sidebar-group">
-          <div className="hive-sidebar-label">Workspace</div>
-          {surfaceItems.map((item) => (
+          {topItems.map((item) => (
             <button
               key={item.key}
               type="button"
-              className={`hive-nav-item${mode === item.key ? " is-active" : ""}`}
-              onClick={() => onSelectMode(item.key)}
+              className={`hive-nav-item${item.active ? " is-active" : ""}`}
+              onClick={item.onClick}
               aria-label={item.ariaLabel}
-              aria-pressed={mode === item.key}
+              aria-pressed={item.active}
+              title={item.title}
             >
               <span className="hive-nav-icon" aria-hidden="true">{item.glyph}</span>
               <span className="hive-nav-label">{item.label}</span>
@@ -267,65 +352,110 @@ export function Sidebar({
           ))}
         </div>
 
-        {/* Zone C: Contextual Sessions, grouped by recency */}
-        <div className="hive-sidebar-group">
-          <div className="hive-sidebar-label">{listsTasks ? "Active work" : "Recent chats"}</div>
-          <div className="hive-session-list">
-            {groups.length === 0 ? (
-              <div className="hive-session-row hive-session-empty">
-                <span className="hive-session-title">
-                  {needle ? `No matching ${noun}` : listsTasks ? "No active work" : "No chats yet"}
-                </span>
-              </div>
-            ) : (
-              groups.map((group) => (
-                <div key={group.label} className="hive-session-group" role="group" aria-label={group.label}>
-                  {groups.length > 1 || group.label !== "Today" ? (
-                    <div className="hive-session-group-label" aria-hidden="true">{group.label}</div>
-                  ) : null}
-                  {group.sessions.map((session) => (
+        {/* Projects: the open folder, recent folders, and a way to open another */}
+        {onOpenRepository && (
+          <div className="hive-sidebar-group hive-project">
+            {sectionHeader("projects", "Projects", (
+              <button
+                type="button"
+                className={`hive-section-action${addingProject ? " is-open" : ""}`}
+                onClick={() => { setAddingProject((open) => !open); setClosedSections((current) => ({ ...current, projects: false })); }}
+                aria-label="Open project"
+                aria-expanded={addingProject}
+                title="Open project"
+              >
+                {GLYPHS.plus}
+              </button>
+            ))}
+            {!closedSections.projects && (
+              <>
+                {addingProject && (
+                  <div className="hive-project-switcher">
+                    {onPickRepository && (
+                      <button type="button" className="hive-btn-secondary hive-project-browse" onClick={() => void onPickRepository()}>
+                        Browse for folder...
+                      </button>
+                    )}
+                    <form onSubmit={(event) => { event.preventDefault(); openProject(path); }}>
+                      <div className="hive-repo-row">
+                        <input
+                          id="sidebar-repo-path"
+                          value={path}
+                          onChange={(event) => setPath(event.target.value)}
+                          placeholder={"C:\\source\\project"}
+                          aria-label="Repository path"
+                          className="hive-form-input hive-repo-input"
+                          spellCheck={false}
+                        />
+                        <button type="submit" disabled={!path.trim()} className="hive-btn-secondary hive-repo-open">Open</button>
+                      </div>
+                    </form>
+                  </div>
+                )}
+                <div className="hive-session-list" role="group" aria-label="Projects">
+                  {repositoryPath ? (
                     <button
-                      key={session.id}
                       type="button"
-                      className={`hive-session-row${session.active ? " is-active" : ""}`}
-                      onClick={() => onSelectSession(session.id)}
-                      title={session.title}
-                      aria-current={session.active ? "page" : undefined}
+                      className="hive-session-row hive-project-row is-active"
+                      aria-current="true"
+                      aria-label={`${projectName(repositoryPath)} (${repositoryPath})`}
+                      title={repositoryPath}
+                      onClick={() => setAddingProject(false)}
                     >
-                      <span className="hive-session-title">{session.title}</span>
-                      {session.status ? (
-                        <span className={`hive-session-status is-${session.status.toLowerCase()}`}>
-                          {session.status}
-                        </span>
-                      ) : null}
+                      <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.folder}</span>
+                      <span className="hive-session-title">{projectName(repositoryPath)}</span>
+                    </button>
+                  ) : busy ? (
+                    <div className="hive-session-row hive-session-empty">
+                      <span className="hive-session-title">Opening project...</span>
+                    </div>
+                  ) : null}
+                  {otherProjects.map((project) => (
+                    <button
+                      key={project.path}
+                      type="button"
+                      className="hive-session-row hive-project-row"
+                      onClick={() => openProject(project.path)}
+                      aria-label={`Open project ${projectName(project.path)} (${project.path})`}
+                      title={project.path}
+                    >
+                      <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.folder}</span>
+                      <span className="hive-session-title">{projectName(project.path)}</span>
                     </button>
                   ))}
+                  {!repositoryPath && !busy && otherProjects.length === 0 && !addingProject ? (
+                    <div className="hive-session-row hive-session-empty">
+                      <span className="hive-session-title">No projects yet</span>
+                    </div>
+                  ) : null}
                 </div>
-              ))
+              </>
             )}
           </div>
+        )}
+
+        {starredSessions.length > 0 && (
+          <div className="hive-sidebar-group">
+            {sectionHeader("starred", "Starred")}
+            {!closedSections.starred && <div className="hive-session-list">{starredSessions.map(sessionRow)}</div>}
+          </div>
+        )}
+
+        <div className="hive-sidebar-group">
+          {sectionHeader("sessions", listsTasks ? "Tasks" : "Chats")}
+          {!closedSections.sessions && (
+            <div className="hive-session-list">
+              {otherSessions.length === 0 && starredSessions.length === 0 ? (
+                <div className="hive-session-row hive-session-empty">
+                  <span className="hive-session-title">{emptyCopy}</span>
+                </div>
+              ) : otherSessions.map(sessionRow)}
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Footer Zone: Usage & Settings */}
-      <div className="hive-sidebar-footer">
-        <button
-          type="button"
-          className={`hive-nav-item${mode === "usage" ? " is-active" : ""}`}
-          onClick={onOpenUsage}
-        >
-          <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.usage}</span>
-          <span className="hive-nav-label">Usage & Telemetry</span>
-        </button>
-        <button
-          type="button"
-          className={`hive-nav-item${mode === "settings" ? " is-active" : ""}`}
-          onClick={onOpenSettings}
-        >
-          <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.settings}</span>
-          <span className="hive-nav-label">Settings</span>
-        </button>
-      </div>
+      <div className="hive-sidebar-footer">{accountMenu}</div>
     </nav>
   );
 }

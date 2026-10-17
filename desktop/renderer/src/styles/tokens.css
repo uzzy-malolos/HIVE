@@ -42,6 +42,7 @@
 
   /* Shell Dimensions */
   --hive-sidebar-width: 256px;
+  --hive-sidebar-rail-width: 52px;
   --hive-titlebar-height: 42px;
   --hive-inspector-width: 390px;
 

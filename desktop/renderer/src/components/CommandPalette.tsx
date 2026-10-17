@@ -11,9 +11,22 @@ export interface CommandPaletteProps {
   open: boolean;
   onClose(): void;
   commands: PaletteCommand[];
+  /** Accessible name of the dialog; the search dialog reuses the palette. */
+  label?: string;
+  placeholder?: string;
+  inputLabel?: string;
+  emptyText?: string;
 }
 
-export function CommandPalette({ open, onClose, commands }: CommandPaletteProps) {
+export function CommandPalette({
+  open,
+  onClose,
+  commands,
+  label = "Command palette",
+  placeholder = "Type a command or search recent repositories…",
+  inputLabel = "Search commands",
+  emptyText = "No matching commands",
+}: CommandPaletteProps) {
   const [filter, setFilter] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -75,7 +88,7 @@ export function CommandPalette({ open, onClose, commands }: CommandPaletteProps)
         className="modal palette-modal"
         role="dialog"
         aria-modal="true"
-        aria-label="Command palette"
+        aria-label={label}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={handleKeyDown}
       >
@@ -86,12 +99,12 @@ export function CommandPalette({ open, onClose, commands }: CommandPaletteProps)
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Type a command or search recent repositories…"
-          aria-label="Search commands"
+          placeholder={placeholder}
+          aria-label={inputLabel}
           autoFocus
         />
 
-        <ul className="palette-list" role="listbox" aria-label="Commands">
+        <ul className="palette-list" role="listbox" aria-label={label === "Command palette" ? "Commands" : "Results"}>
           {filtered.length ? (
             filtered.map((cmd, idx) => (
               <li key={cmd.id} role="option" aria-selected={idx === selectedIndex}>
@@ -111,7 +124,7 @@ export function CommandPalette({ open, onClose, commands }: CommandPaletteProps)
             ))
           ) : (
             <li className="palette-item">
-              <span>No matching commands</span>
+              <span>{emptyText}</span>
             </li>
           )}
         </ul>

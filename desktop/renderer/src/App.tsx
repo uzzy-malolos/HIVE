@@ -40,6 +40,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
   const [settingsTab, setSettingsTab] = useState<"general" | "models" | "catalog">("general");
   const [modelsLoading, setModelsLoading] = useState<Record<string, boolean>>({});
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [stickyError, setStickyError] = useState<string | null>(null);
@@ -160,7 +161,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
   const repositoryActiveRun = state.threads.flatMap((thread) => thread.runs).find((run) => !terminalStatuses.has(run.status)) ?? null;
   const sessionId = currentRun?.codingSessionId;
   const report = sessionId ? state.reports[sessionId] : null;
-  const modalOpen = Boolean(state.preview || providerDialog || settingsOpen || paletteOpen || shortcutHelpOpen);
+  const modalOpen = Boolean(state.preview || providerDialog || settingsOpen || paletteOpen || searchOpen || shortcutHelpOpen);
 
   // --- Shell-derived navigation/tabs -------------------------------------------------
   const openSettingsModels = () => { setSettingsTab("models"); setSettingsOpen(true); };
@@ -246,6 +247,34 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
       dispatch({ type: "ui.mode", mode: "coder" });
     }
   };
+
+  const starredIds = prefs.starred ?? [];
+  const toggleStar = (id: string): void => {
+    const current = prefs.starred ?? [];
+    updatePrefs({ starred: current.includes(id) ? current.filter((entry) => entry !== id) : [...current, id] });
+  };
+
+  const archiveSession = async (id: string): Promise<void> => {
+    if (prefs.starred?.includes(id)) updatePrefs({ starred: prefs.starred.filter((entry) => entry !== id) });
+    if (id.startsWith("chat-")) {
+      const conversationId = id.slice("chat-".length);
+      const archived = await send({ type: "chat.archive", conversationId });
+      // Archiving the open chat lands on a fresh one, as ChatGPT and Claude do.
+      if (archived.type === "chat.listed" && state.chat.activeId === conversationId) await handleNewTask();
+    } else if (id.startsWith("thread-")) {
+      await send({ type: "thread.archive", threadId: id.slice("thread-".length) });
+    }
+  };
+
+  // Search spans every unarchived chat and, with a project open, its tasks.
+  const searchCommands: PaletteCommand[] = useMemo(() => [
+    ...state.chat.conversations
+      .filter((conversation) => !conversation.archived)
+      .map((conversation) => ({ id: `chat-${conversation.id}`, label: conversation.title || "New chat", hint: "Chat", run: () => handleSelectSession(`chat-${conversation.id}`) })),
+    ...state.threads
+      .filter((thread) => !thread.archived)
+      .map((thread) => ({ id: `thread-${thread.id}`, label: thread.title, hint: "Task", run: () => handleSelectSession(`thread-${thread.id}`) })),
+  ], [state.chat.conversations, state.threads]);
 
   const handleNewTask = async (): Promise<void> => {
     dispatch({ type: "ui.mode", mode: "chat" });
@@ -520,6 +549,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         if (paletteOpen) { setPaletteOpen(false); return; }
+        if (searchOpen) { setSearchOpen(false); return; }
         if (shortcutHelpOpen) { setShortcutHelpOpen(false); return; }
         if (settingsOpen) { setSettingsOpen(false); return; }
         if (providerDialog) { closeProviderDialog(); return; }
@@ -551,6 +581,12 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
       if (!modalOpen && meta && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "n" && (!typing || inChatComposer)) {
         event.preventDefault();
         startNewChatRef.current();
+        return;
+      }
+
+      if (!modalOpen && meta && event.shiftKey && !event.altKey && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        setSearchOpen(true);
         return;
       }
 
@@ -587,7 +623,7 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [paletteOpen, shortcutHelpOpen, settingsOpen, providerDialog, state.preview, modalOpen, composer, activeThread, state.repositoryRoot, repositoryActiveRun]);
+  }, [paletteOpen, searchOpen, shortcutHelpOpen, settingsOpen, providerDialog, state.preview, modalOpen, composer, activeThread, state.repositoryRoot, repositoryActiveRun]);
 
   return (
     <div className="app-shell dual-shell" data-density={prefs.density ?? "comfortable"} data-accent={prefs.accent ?? "vivid"}>
@@ -601,6 +637,11 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
         onCreateTask={handleNewTask}
         sessions={recentSessions}
         onSelectSession={handleSelectSession}
+        onOpenSearch={() => setSearchOpen(true)}
+        onArchiveSession={(id) => void archiveSession(id)}
+        starredIds={starredIds}
+        onToggleStar={toggleStar}
+        onOpenShortcuts={() => setShortcutHelpOpen(true)}
         repositoryPath={state.repositoryRoot ?? ""}
         onOpenRepository={openRepository}
         onPickRepository={pickAndOpenRepository}
@@ -772,6 +813,16 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
         commands={paletteCommands}
+      />
+
+      <CommandPalette
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        commands={searchCommands}
+        label="Search chats"
+        inputLabel="Search chats and tasks"
+        placeholder="Search chats and tasks..."
+        emptyText="No matching chats or tasks"
       />
 
       {shortcutHelpOpen && (

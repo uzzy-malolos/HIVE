@@ -15,6 +15,11 @@ export interface ShellProps {
   onCreateTask: () => void;
   sessions: SidebarSession[];
   onSelectSession: (id: string) => void;
+  onOpenSearch?: () => void;
+  onArchiveSession?: (id: string) => void;
+  starredIds?: string[];
+  onToggleStar?: (id: string) => void;
+  onOpenShortcuts?: () => void;
 
   projectName?: string;
   repositoryPath?: string;
@@ -35,7 +40,7 @@ export interface ShellProps {
   onPickRepository?: () => Promise<void>;
   recentProjects?: SidebarRecentProject[];
   busy?: boolean;
-  /** When false the global sidebar is hidden (Ctrl+B or the titlebar toggle). */
+  /** When false the global sidebar shrinks to an icon rail (Ctrl+B or the titlebar toggle). */
   sidebarOpen?: boolean;
   onToggleSidebar?: () => void;
 
@@ -49,6 +54,11 @@ export function Shell({
   onCreateTask,
   sessions,
   onSelectSession,
+  onOpenSearch,
+  onArchiveSession,
+  starredIds,
+  onToggleStar,
+  onOpenShortcuts,
   projectName,
   repositoryPath,
   sessionTabs,
@@ -90,9 +100,15 @@ export function Shell({
       />
 
       <div className="hive-body">
-        {sidebarOpen ? (
         <Sidebar
           mode={mode}
+          collapsed={!sidebarOpen}
+          onOpenSearch={onOpenSearch}
+          onArchiveSession={onArchiveSession}
+          starredIds={starredIds}
+          onToggleStar={onToggleStar}
+          onOpenShortcuts={onOpenShortcuts}
+          accountDetail={activeModelName}
           onSelectMode={onSelectMode}
           onCreateTask={onCreateTask}
           sessions={sessions}
@@ -106,7 +122,6 @@ export function Shell({
           recentProjects={recentProjects}
           busy={busy}
         />
-        ) : null}
         <main className="hive-main">
           {children}
         </main>

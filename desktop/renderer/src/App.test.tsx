@@ -226,17 +226,45 @@ describe("HIVE desktop cockpit", () => {
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /^codex$/i }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/corrupt and was preserved/i);
-    expect(screen.getByText(/No active work/i)).toBeInTheDocument();
+    expect(screen.getByText(/Open a project to see its tasks/i)).toBeInTheDocument();
   });
 
-  it("hides and restores the sidebar with Ctrl+B and the titlebar toggle", async () => {
+  it("collapses the sidebar to an icon rail with Ctrl+B and expands it from the titlebar", async () => {
     render(<App api={bridge()} />);
     const user = userEvent.setup();
-    expect(screen.getByRole("navigation", { name: /global navigation/i })).toBeInTheDocument();
+    const sidebar = () => screen.getByRole("navigation", { name: /global navigation/i });
+    expect(sidebar()).not.toHaveAttribute("data-collapsed");
     await user.keyboard("{Control>}b{/Control}");
-    expect(screen.queryByRole("navigation", { name: /global navigation/i })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Show sidebar" }));
-    expect(screen.getByRole("navigation", { name: /global navigation/i })).toBeInTheDocument();
+    expect(sidebar()).toHaveAttribute("data-collapsed", "true");
+    await user.click(screen.getByRole("button", { name: "Expand sidebar" }));
+    expect(sidebar()).not.toHaveAttribute("data-collapsed");
+  });
+
+  it("archiving the open chat from its row menu starts a fresh chat", async () => {
+    const summary = { id: "chat-1789200000000-open", title: "Open plan", role: "auto", updatedAt: now, messageCount: 1 };
+    const conversation = { id: summary.id, cwd: "C:\\HIVE", role: "auto", ground: false, createdAt: now, updatedAt: now, messages: [{ id: "u1", role: "user" as const, content: "Open plan", at: now }] };
+    const api = bridge({
+      request: async (command) => {
+        if (command.type === "chat.list") return { type: "chat.listed", timestamp: now, conversations: [summary] };
+        if (command.type === "chat.load") return { type: "chat.changed", timestamp: now, conversation };
+        if (command.type === "chat.archive") return { type: "chat.listed", timestamp: now, conversations: [{ ...summary, archived: true }] };
+        if (command.type === "chat.create") return { type: "chat.changed", timestamp: now, conversation: { ...conversation, id: "chat-1789200000000-next", messages: [] } };
+        return eventFor(command);
+      },
+    });
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    const sidebar = screen.getByRole("navigation", { name: /global navigation/i });
+    await user.click(within(sidebar).getByRole("button", { name: "Chat" }));
+    await user.click(await within(sidebar).findByRole("button", { name: "Open plan" }));
+    await user.click(within(sidebar).getByRole("button", { name: "Chat options", description: "Open plan" }));
+    await user.click(screen.getByRole("menuitem", { name: "Archive" }));
+    await waitFor(() => {
+      const types = api.request.mock.calls.map(([command]) => command.type);
+      expect(types).toContain("chat.archive");
+      expect(types).toContain("chat.create");
+    });
+    expect(within(sidebar).queryByRole("button", { name: "Open plan" })).not.toBeInTheDocument();
   });
 
   it("keeps the latest repository epoch when A resolves after B and rejects late A results", async () => {
@@ -274,8 +302,9 @@ describe("HIVE desktop cockpit", () => {
     expect(screen.getByRole("button", { name: /Repository B thread/i })).toBeInTheDocument();
     expect(screen.queryByText(/Late A thread/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Late A error/i)).not.toBeInTheDocument();
-    const sidebar = screen.getByRole("navigation", { name: /global navigation/i });
-    await user.click(within(sidebar).getByRole("button", { name: /switch project, current B$/i }));
+    const projects = screen.getByRole("group", { name: "Projects" });
+    expect(within(projects).getByRole("button", { name: "B (C:\\B)" })).toHaveAttribute("aria-current", "true");
+    await user.click(screen.getByRole("button", { name: "Open project" }));
     expect(screen.getByLabelText(/repository path/i)).toHaveValue("C:\\B");
   });
 
@@ -482,9 +511,11 @@ describe("HIVE desktop cockpit", () => {
     expect(newerButton.compareDocumentPosition(olderButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Archived secret" })).not.toBeInTheDocument();
 
-    await user.type(within(sidebar).getByRole("searchbox", { name: /search chats/i }), "older");
-    expect(within(sidebar).queryByRole("button", { name: "Newer plan" })).not.toBeInTheDocument();
-    await user.click(within(sidebar).getByRole("button", { name: "Older notes" }));
+    await user.click(within(sidebar).getByRole("button", { name: "Search chats" }));
+    const search = screen.getByRole("dialog", { name: "Search chats" });
+    await user.type(within(search).getByRole("textbox", { name: "Search chats and tasks" }), "older");
+    expect(within(search).queryByText("Newer plan")).not.toBeInTheDocument();
+    await user.click(within(search).getByRole("button", { name: /Older notes/ }));
     expect(await screen.findByText("Older answer")).toBeInTheDocument();
     expect(api.request.mock.calls.some(([command]) => command.type === "chat.load" && command.conversationId === olderConversation.id)).toBe(true);
 

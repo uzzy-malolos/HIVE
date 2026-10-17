@@ -62,9 +62,9 @@ export function Titlebar({
           type="button"
           className="hive-titlebar-btn hive-titlebar-sidebar-toggle"
           onClick={onToggleSidebar}
-          aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+          aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
           aria-pressed={sidebarOpen}
-          title={`${sidebarOpen ? "Hide" : "Show"} sidebar (Ctrl+B)`}
+          title={`${sidebarOpen ? "Collapse" : "Expand"} sidebar (Ctrl+B)`}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <rect x="3" y="3" width="18" height="18" rx="2" />
