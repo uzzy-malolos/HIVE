@@ -74,6 +74,11 @@ describe("Sidebar projects", () => {
     expect(onPickRepository).toHaveBeenCalledOnce();
   });
 
+  it("hides project options when no handlers are given", () => {
+    renderSidebar({ repositoryPath: "C:\\work\\api" });
+    expect(screen.queryByRole("button", { name: "Project options" })).not.toBeInTheDocument();
+  });
+
   it("collapses a section from its header", async () => {
     const user = userEvent.setup();
     renderSidebar({ repositoryPath: "C:\\work\\api" });

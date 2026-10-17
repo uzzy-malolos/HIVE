@@ -1,4 +1,4 @@
-import { execFile as nodeExecFile } from "node:child_process";
+import { execFile as nodeExecFile, spawn } from "node:child_process";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
 import type { DesktopOpenEditorRequest, DesktopOpenExplorerRequest } from "../types.js";
@@ -31,11 +31,41 @@ export async function resolveWorkspaceTarget(repositoryRoot: string, target = ".
 
 type ExecFileRunner = (file: string, args: readonly string[], options?: { cwd?: string; windowsHide?: boolean }) => Promise<void>;
 
-export interface TrustedExecutableResolver { resolve(name: "code" | "cursor" | "devenv" | "wt" | "explorer" | "git" | "gh", repositoryRoot: string): Promise<string> }
+/** Linux terminals tried in order, with the flag that sets the starting folder (none: they inherit the cwd). */
+const LINUX_TERMINALS = [
+  { name: "gnome-terminal", args: (dir: string) => [`--working-directory=${dir}`] },
+  { name: "konsole", args: (dir: string) => ["--workdir", dir] },
+  { name: "xfce4-terminal", args: (dir: string) => [`--working-directory=${dir}`] },
+  { name: "kitty", args: (dir: string) => ["--directory", dir] },
+  { name: "alacritty", args: (dir: string) => ["--working-directory", dir] },
+  { name: "wezterm", args: (dir: string) => ["start", "--cwd", dir] },
+  { name: "foot", args: (dir: string) => [`--working-directory=${dir}`] },
+  { name: "x-terminal-emulator", args: () => [] },
+  { name: "xterm", args: () => [] },
+] as const;
+
+type LinuxTerminalName = (typeof LINUX_TERMINALS)[number]["name"];
+
+export interface TrustedExecutableResolver { resolve(name: "code" | "cursor" | "devenv" | "wt" | "explorer" | "git" | "gh" | "open" | "xdg-open" | LinuxTerminalName, repositoryRoot: string): Promise<string> }
 
 export function assertTrustedExecutablePath(repositoryRoot: string, executable: string): string {
   if (!path.isAbsolute(executable) || contained(path.resolve(repositoryRoot), path.resolve(executable))) throw new Error("Refusing to launch an untrusted repository executable.");
   return executable;
+}
+
+/**
+ * Starts a GUI app without waiting for it to exit; Linux terminals such as xterm live as long as
+ * their window. macOS `open` and `xdg-open` hand off and exit, so they run through execFile, which
+ * surfaces their failure (for example, no file manager installed).
+ */
+type DetachedLauncher = (file: string, args: readonly string[], options: { cwd: string }) => Promise<void>;
+
+function defaultLaunchDetached(file: string, args: readonly string[], options: { cwd: string }): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(file, [...args], { cwd: options.cwd, detached: true, stdio: "ignore" });
+    child.once("error", reject);
+    child.once("spawn", () => { child.unref(); resolve(); });
+  });
 }
 
 function defaultExecFile(file: string, args: readonly string[], options?: { cwd?: string; windowsHide?: boolean }): Promise<void> {
@@ -45,7 +75,13 @@ function defaultExecFile(file: string, args: readonly string[], options?: { cwd?
 type TrustedExecutableName = Parameters<TrustedExecutableResolver["resolve"]>[0];
 
 /** Command names on Linux and macOS; Windows Terminal, Explorer and Visual Studio have no equivalent here. */
-const POSIX_COMMANDS: Partial<Record<TrustedExecutableName, string>> = { git: "git", gh: "gh", code: "code", cursor: "cursor" };
+const POSIX_COMMANDS: Partial<Record<TrustedExecutableName, string>> = {
+  git: "git", gh: "gh", code: "code", cursor: "cursor", open: "open", "xdg-open": "xdg-open",
+  ...Object.fromEntries(LINUX_TERMINALS.map((terminal) => [terminal.name, terminal.name])),
+};
+
+/** Windows lookups through where.exe; anything else is a POSIX-only tool. */
+const WINDOWS_QUERIES: Partial<Record<TrustedExecutableName, string>> = { code: "Code.exe", cursor: "Cursor.exe", devenv: "devenv.exe", wt: "wt.exe", git: "git.exe", gh: "gh.exe" };
 
 /**
  * Searched after PATH. Apps launched from the macOS Finder or a Linux desktop entry get a minimal
@@ -101,7 +137,8 @@ export class SystemTrustedExecutableResolver implements TrustedExecutableResolve
     const systemRoot = this.#outside(root, await fs.realpath(process.env.SystemRoot || "C:\\Windows"));
     if (name === "explorer") return this.#outside(root, await fs.realpath(path.join(systemRoot, "explorer.exe")));
     const where = this.#outside(root, await fs.realpath(path.join(systemRoot, "System32", "where.exe")));
-    const query = name === "code" ? "Code.exe" : name === "cursor" ? "Cursor.exe" : name === "devenv" ? "devenv.exe" : name === "wt" ? "wt.exe" : name === "git" ? "git.exe" : "gh.exe";
+    const query = WINDOWS_QUERIES[name];
+    if (!query) throw new Error(`Trusted executable ${name} is not available on Windows.`);
     const output = await new Promise<string>((resolve, reject) => nodeExecFile(where, [query], { cwd: systemRoot, windowsHide: true }, (error, stdout) => error ? reject(new Error(`Trusted executable ${name} is unavailable.`)) : resolve(String(stdout))));
     const candidates = output.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean);
     for (const candidate of candidates) {
@@ -117,12 +154,28 @@ export class SystemTrustedExecutableResolver implements TrustedExecutableResolve
   }
 }
 
+export interface DesktopExternalToolOptions {
+  platform?: NodeJS.Platform;
+  launchDetached?: DetachedLauncher;
+}
+
 export class DesktopExternalToolService {
+  readonly #platform: NodeJS.Platform;
+  readonly #launchDetached: DetachedLauncher;
+
   public constructor(
     private readonly editor: "vscode" | "cursor" | "visual-studio" = "vscode",
     private readonly execFile: ExecFileRunner = defaultExecFile,
     private readonly executables: TrustedExecutableResolver = new SystemTrustedExecutableResolver(),
-  ) {}
+    options: DesktopExternalToolOptions = {},
+  ) {
+    this.#platform = options.platform ?? process.platform;
+    this.#launchDetached = options.launchDetached ?? defaultLaunchDetached;
+  }
+
+  async #trusted(name: Parameters<TrustedExecutableResolver["resolve"]>[0], root: string): Promise<string> {
+    return assertTrustedExecutablePath(root, await this.executables.resolve(name, root));
+  }
 
   public async openEditor(input: DesktopOpenEditorRequest): Promise<void> {
     const root = await resolveWorkspaceTarget(input.repositoryRoot);
@@ -136,13 +189,40 @@ export class DesktopExternalToolService {
 
   public async openTerminal(repositoryRoot: string): Promise<void> {
     const root = await resolveWorkspaceTarget(repositoryRoot);
-    await this.execFile(assertTrustedExecutablePath(root, await this.executables.resolve("wt", root)), ["-d", root], { cwd: root, windowsHide: true });
+    if (this.#platform === "win32") {
+      await this.execFile(await this.#trusted("wt", root), ["-d", root], { cwd: root, windowsHide: true });
+      return;
+    }
+    if (this.#platform === "darwin") {
+      await this.execFile(await this.#trusted("open", root), ["-a", "Terminal", root], { cwd: root });
+      return;
+    }
+    for (const terminal of LINUX_TERMINALS) {
+      let executable: string;
+      try { executable = await this.#trusted(terminal.name, root); } catch { continue; }
+      await this.#launchDetached(executable, terminal.args(root), { cwd: root });
+      return;
+    }
+    throw new Error(`No supported terminal was found. Install one of: ${LINUX_TERMINALS.map((terminal) => terminal.name).join(", ")}.`);
   }
 
   public async openExplorer(input: DesktopOpenExplorerRequest): Promise<void> {
     const root = await resolveWorkspaceTarget(input.repositoryRoot);
     const target = input.path ? await resolveWorkspaceTarget(root, input.path) : root;
-    const stat = await fs.stat(target);
-    await this.execFile(assertTrustedExecutablePath(root, await this.executables.resolve("explorer", root)), stat.isDirectory() ? [target] : ["/select,", target], { cwd: root, windowsHide: true });
+    const isDirectory = (await fs.stat(target)).isDirectory();
+    if (this.#platform === "win32") {
+      await this.execFile(await this.#trusted("explorer", root), isDirectory ? [target] : ["/select,", target], { cwd: root, windowsHide: true });
+    } else if (this.#platform === "darwin") {
+      // Finder opens a folder, or reveals a file selected in its folder.
+      await this.execFile(await this.#trusted("open", root), isDirectory ? [target] : ["-R", target], { cwd: root });
+    } else {
+      // xdg-open has no "select this file" mode, so a file opens its containing folder.
+      const opener = await this.#trusted("xdg-open", root);
+      try {
+        await this.execFile(opener, [isDirectory ? target : path.dirname(target)], { cwd: root });
+      } catch {
+        throw new Error("No file manager opened the folder. Install one and set it as the default for folders (xdg-mime default <app>.desktop inode/directory).");
+      }
+    }
   }
 }

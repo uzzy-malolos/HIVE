@@ -42,6 +42,9 @@ export interface SidebarProps {
   onOpenRepository?: (path: string) => Promise<void>;
   /** Opens the native folder picker and then the chosen project. */
   onPickRepository?: () => Promise<void>;
+  /** Open the current project in the system terminal / file manager. */
+  onOpenProjectTerminal?: () => void;
+  onRevealProject?: () => void;
   /** Leaves the open project for chats that belong to no project. */
   onCloseRepository?: () => Promise<void>;
   recentProjects?: SidebarRecentProject[];
@@ -133,6 +136,11 @@ const GLYPHS: Record<string, React.ReactNode> = {
       <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1L5 6M10 11v6M14 11v6" />
     </svg>
   ),
+  terminal: (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="m4 17 6-6-6-6M12 19h8" />
+    </svg>
+  ),
   chevron: (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="m6 9 6 6 6-6" />
@@ -163,6 +171,8 @@ export function Sidebar({
   onOpenRepository,
   onPickRepository,
   onCloseRepository,
+  onOpenProjectTerminal,
+  onRevealProject,
   recentProjects = [],
   busy = false,
   collapsed = false,
@@ -478,17 +488,46 @@ export function Sidebar({
                     </button>
                   ) : null}
                   {repositoryPath ? (
-                    <button
-                      type="button"
-                      className="hive-session-row hive-project-row is-active"
-                      aria-current="true"
-                      aria-label={`${projectName(repositoryPath)} (${repositoryPath})`}
-                      title={repositoryPath}
-                      onClick={() => setAddingProject(false)}
-                    >
-                      <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.folder}</span>
-                      <span className="hive-session-title">{projectName(repositoryPath)}</span>
-                    </button>
+                    <div className={`hive-session-item${menu === "project" ? " is-menu-open" : ""}`} data-sidebar-menu={menu === "project" ? true : undefined}>
+                      <button
+                        type="button"
+                        className="hive-session-row hive-project-row is-active"
+                        aria-current="true"
+                        aria-label={`${projectName(repositoryPath)} (${repositoryPath})`}
+                        title={repositoryPath}
+                        onClick={() => setAddingProject(false)}
+                      >
+                        <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.folder}</span>
+                        <span className="hive-session-title">{projectName(repositoryPath)}</span>
+                      </button>
+                      {onOpenProjectTerminal || onRevealProject ? (
+                        <button
+                          type="button"
+                          className="hive-session-more"
+                          onClick={() => setMenu((current) => current === "project" ? null : "project")}
+                          aria-haspopup="menu"
+                          aria-expanded={menu === "project"}
+                          aria-label="Project options"
+                          data-sidebar-menu
+                        >
+                          {GLYPHS.more}
+                        </button>
+                      ) : null}
+                      {menu === "project" && (
+                        <div className="hive-sidebar-menu hive-session-menu" role="menu" aria-label="Project options" data-sidebar-menu>
+                          {onOpenProjectTerminal && (
+                            <button type="button" role="menuitem" className="hive-menu-item" onClick={() => { setMenu(null); onOpenProjectTerminal(); }}>
+                              <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.terminal}</span>Open in terminal
+                            </button>
+                          )}
+                          {onRevealProject && (
+                            <button type="button" role="menuitem" className="hive-menu-item" onClick={() => { setMenu(null); onRevealProject(); }}>
+                              <span className="hive-nav-icon" aria-hidden="true">{GLYPHS.folder}</span>Show in file manager
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   ) : busy ? (
                     <div className="hive-session-row hive-session-empty">
                       <span className="hive-session-title">Opening project...</span>

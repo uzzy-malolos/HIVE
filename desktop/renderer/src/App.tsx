@@ -395,6 +395,14 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
     await send({ type: "chat.list" }, { epoch });
   }
 
+  async function openProjectTerminal(): Promise<void> {
+    if (state.repositoryRoot) await send({ type: "external.open-terminal", repositoryRoot: state.repositoryRoot });
+  }
+
+  async function revealProject(): Promise<void> {
+    if (state.repositoryRoot) await send({ type: "external.open-explorer", input: { repositoryRoot: state.repositoryRoot } });
+  }
+
   async function pickAndOpenRepository(): Promise<void> {
     const picked = await send({ type: "workspace.pick" });
     if (picked.type === "workspace.picked" && picked.path) await openRepository(picked.path);
@@ -522,6 +530,11 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
       hint: "Browse",
       run: () => void pickAndOpenRepository(),
     });
+
+    if (state.repositoryRoot) {
+      list.push({ id: "project-terminal", label: "Open project in terminal", hint: "Terminal", run: () => void openProjectTerminal() });
+      list.push({ id: "project-reveal", label: "Show project in file manager", hint: "Folder", run: () => void revealProject() });
+    }
 
     state.repositories
       .filter((repo) => repo.path.toLowerCase() !== state.repositoryRoot?.toLowerCase())
@@ -735,6 +748,8 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
         onOpenRepository={openRepository}
         onPickRepository={pickAndOpenRepository}
         onCloseRepository={closeRepository}
+        onOpenProjectTerminal={() => void openProjectTerminal()}
+        onRevealProject={() => void revealProject()}
         recentProjects={state.repositories}
         busy={busy}
         sidebarOpen={state.rails.left}

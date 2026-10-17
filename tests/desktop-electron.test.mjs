@@ -222,7 +222,7 @@ test("desktop launches ignore malicious repository executables and use resolved 
   const launches = [];
   const trusted = path.join(path.parse(root).root, "trusted-system-tools");
   const resolver = { async resolve(name) { return path.join(trusted, `${name}.exe`); } };
-  const tools = new DesktopExternalToolService("vscode", async (file, args, options) => { launches.push({ file, args, options }); }, resolver);
+  const tools = new DesktopExternalToolService("vscode", async (file, args, options) => { launches.push({ file, args, options }); }, resolver, { platform: "win32" });
   await tools.openEditor({ repositoryRoot: root, path: "code.cmd" });
   await tools.openTerminal(root);
   await tools.openExplorer({ repositoryRoot: root, path: "explorer.exe" });
@@ -1299,6 +1299,86 @@ test("trusted executables resolve from PATH on Linux and macOS, never from insid
 
     for (const windowsOnly of ["wt", "explorer", "devenv"]) {
       await assert.rejects(() => resolver.resolve(windowsOnly, repository), /only available on Windows/);
+    }
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test("terminal and file manager open with platform tools on macOS and Linux", async () => {
+  const { mkdir } = await import("node:fs/promises");
+  const root = await realpath(await temporaryDirectory("hive-posix-tools-"));
+  try {
+    await mkdir(path.join(root, "src"));
+    await writeFile(path.join(root, "src", "app.ts"), "export {};\n", "utf8");
+    const trusted = path.join(path.parse(root).root, "trusted-system-tools");
+    const run = async (platform, available) => {
+      const launches = [];
+      const resolver = { async resolve(name) { if (!available.includes(name)) throw new Error(`${name} missing`); return path.join(trusted, name); } };
+      const tools = new DesktopExternalToolService("vscode", async (file, args, options) => { launches.push({ via: "exec", tool: path.basename(file), args, cwd: options.cwd }); }, resolver, {
+        platform,
+        launchDetached: async (file, args, options) => { launches.push({ via: "detached", tool: path.basename(file), args, cwd: options.cwd }); },
+      });
+      return { tools, launches };
+    };
+
+    const mac = await run("darwin", ["open"]);
+    await mac.tools.openTerminal(root);
+    await mac.tools.openExplorer({ repositoryRoot: root, path: "src" });
+    await mac.tools.openExplorer({ repositoryRoot: root, path: "src/app.ts" });
+    // `open` hands off and exits, so it is awaited and its failures surface.
+    assert.deepEqual(mac.launches, [
+      { via: "exec", tool: "open", args: ["-a", "Terminal", root], cwd: root },
+      { via: "exec", tool: "open", args: [path.join(root, "src")], cwd: root },
+      { via: "exec", tool: "open", args: ["-R", path.join(root, "src", "app.ts")], cwd: root },
+    ]);
+
+    // The first installed terminal wins, with its own working-directory flag.
+    const linux = await run("linux", ["konsole", "xterm", "xdg-open"]);
+    await linux.tools.openTerminal(root);
+    await linux.tools.openExplorer({ repositoryRoot: root, path: "src/app.ts" });
+    // Terminal emulators stay open with their window, so they are detached.
+    assert.deepEqual(linux.launches, [
+      { via: "detached", tool: "konsole", args: ["--workdir", root], cwd: root },
+      { via: "exec", tool: "xdg-open", args: [path.join(root, "src")], cwd: root },
+    ]);
+
+    // Terminals without a directory flag start in the repository through their cwd.
+    const bare = await run("linux", ["xterm"]);
+    await bare.tools.openTerminal(root);
+    assert.deepEqual(bare.launches, [{ via: "detached", tool: "xterm", args: [], cwd: root }]);
+
+    const failing = new DesktopExternalToolService("vscode", async () => { throw new Error("Command failed: xdg-open"); }, { async resolve(name) { return path.join(trusted, name); } }, { platform: "linux" });
+    await assert.rejects(() => failing.openExplorer({ repositoryRoot: root }), /No file manager opened the folder/);
+
+    const none = await run("linux", []);
+    await assert.rejects(() => none.tools.openTerminal(root), /No supported terminal was found/);
+    await assert.rejects(() => none.tools.openExplorer({ repositoryRoot: root }), /xdg-open missing/);
+    await assert.rejects(() => none.tools.openExplorer({ repositoryRoot: root, path: "../outside" }), /outside/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("detached GUI launches return once the process starts, not when it exits", { skip: process.platform === "win32" }, async () => {
+  const { chmod } = await import("node:fs/promises");
+  const base = await realpath(await temporaryDirectory("hive-detached-launch-"));
+  const root = path.join(base, "repository");
+  try {
+    await import("node:fs/promises").then(({ mkdir }) => mkdir(root));
+    // Stands in for a terminal such as xterm that keeps running while its window is open.
+    const terminal = path.join(base, "long-lived-terminal");
+    const marker = path.join(base, "started");
+    await writeFile(terminal, `#!/bin/sh\ntouch "${marker}"\nsleep 5\n`, "utf8");
+    await chmod(terminal, 0o755);
+    const tools = new DesktopExternalToolService("vscode", undefined, { async resolve() { return terminal; } }, { platform: "linux" });
+    const startedAt = Date.now();
+    await tools.openTerminal(root);
+    assert.ok(Date.now() - startedAt < 2_000, "openTerminal must not wait for the terminal to close");
+    const deadline = Date.now() + 3_000;
+    while (!(await readFile(marker).then(() => true, () => false))) {
+      if (Date.now() > deadline) throw new Error("the detached terminal never ran");
+      await new Promise((resolve) => setTimeout(resolve, 25));
     }
   } finally {
     await rm(base, { recursive: true, force: true });

@@ -356,6 +356,23 @@ describe("HIVE desktop cockpit", () => {
     expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
   });
 
+  it("opens the current project in the terminal and file manager from its row menu", async () => {
+    const api = bridge();
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    api.emit({ type: "desktop.ready", timestamp: now, repositoryRoot: "C:\\HIVE" });
+    const projects = await screen.findByRole("group", { name: "Projects" });
+    await user.click(within(projects).getByRole("button", { name: "Project options" }));
+    await user.click(screen.getByRole("menuitem", { name: "Open in terminal" }));
+    await user.click(within(projects).getByRole("button", { name: "Project options" }));
+    await user.click(screen.getByRole("menuitem", { name: "Show in file manager" }));
+    await waitFor(() => {
+      const commands = api.request.mock.calls.map(([command]) => command);
+      expect(commands).toContainEqual(expect.objectContaining({ type: "external.open-terminal", repositoryRoot: "C:\\HIVE" }));
+      expect(commands).toContainEqual(expect.objectContaining({ type: "external.open-explorer", input: { repositoryRoot: "C:\\HIVE" } }));
+    });
+  });
+
   it("restores and deletes chats from the Archived chats dialog", async () => {
     const archived = { id: "chat-1789200000000-arc1", title: "Old research", role: "auto", updatedAt: now, messageCount: 2, archived: true };
     const api = bridge({
