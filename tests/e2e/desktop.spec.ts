@@ -51,6 +51,7 @@ test.describe.serial("HIVE desktop Hive Code flow", () => {
     const stored = await hive.configureOpenAi(secret);
     // Windows (DPAPI) and macOS (Keychain) encrypt; keyring-less Linux test hosts use Chromium's basic store.
     expect(stored).toBe("stored");
+    await hive.expectProviderConnected("OpenAI");
     await hive.approveOllama();
 
     // No task is selected, so the first message starts one named after it.

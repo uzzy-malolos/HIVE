@@ -506,6 +506,10 @@ export function App({ api: suppliedApi }: { api?: HiveDesktopBridge }) {
       if (configured.type === "request.failed") return;
       const setCred = await send({ type: "credential.set", input });
       if (setCred.type !== "request.failed") {
+        // provider.configure ran before the key existed, so reload the backend's now-configured status.
+        // Mark the provider requested first: this call fetches its models, so the effect must not fetch them again.
+        modelsRequested.current.add(providerId);
+        await send({ type: "provider.list" });
         await fetchModels(providerId);
       }
     }

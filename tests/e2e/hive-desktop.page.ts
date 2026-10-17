@@ -60,6 +60,14 @@ export class HiveDesktopPage {
     await expect(this.page.getByRole("dialog")).toHaveCount(0);
   }
 
+  /** Settings must report the provider as connected; Escape closes it because its header sits under the titlebar. */
+  async expectProviderConnected(name: string): Promise<void> {
+    const providers = await this.openProviderSettings();
+    await expect(this.providerRow(providers, name).locator(".provider-settings-meta")).toHaveText(/· connected$/);
+    await this.page.keyboard.press("Escape");
+    await expect(providers).toHaveCount(0);
+  }
+
   /** A provider row by its exact display name ("OpenAI" must not match "openai-compatible" metadata). */
   providerRow(providers: Locator, name: string): Locator {
     return providers.getByRole("listitem").filter({ has: this.page.locator("strong").getByText(name, { exact: true }) });

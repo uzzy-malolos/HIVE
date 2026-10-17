@@ -73,6 +73,36 @@ async function openRepository(api = bridge()) {
 describe("HIVE desktop cockpit", () => {
   afterEach(() => { vi.useRealTimers(); });
 
+  it("shows a provider as connected once its API key is stored", async () => {
+    let stored = false;
+    const api = bridge({ request: async (command) => {
+      if (command.type === "credential.set") {
+        stored = true;
+        return { type: "credential.changed", timestamp: now, credential: { providerId: command.input.providerId, kind: command.input.kind, configured: true, updatedAt: now } };
+      }
+      const event = eventFor(command);
+      if (event.type !== "provider.listed" || !stored) return event;
+      return { ...event, providers: event.providers.map((provider) => provider.id === "cloud" ? { ...provider, configured: true } : provider) };
+    } });
+    render(<App api={api} />);
+    const user = userEvent.setup();
+    const cloudStatus = async () => {
+      await user.click(screen.getByRole("button", { name: "Open settings" }));
+      const row = (await screen.findByText("Cloud model")).closest(".provider-settings-row") as HTMLElement;
+      return row;
+    };
+
+    const row = await cloudStatus();
+    expect(within(row).getByText(/not connected/)).toBeInTheDocument();
+    await user.click(within(row).getByRole("button", { name: "Configure" }));
+    await user.type(screen.getByLabelText("API key"), "sk-test-key");
+    await user.click(screen.getByRole("button", { name: "Store encrypted credential" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Configure provider" })).not.toBeInTheDocument());
+
+    const refreshed = await cloudStatus();
+    await waitFor(() => expect(within(refreshed).getByText(/· connected$/)).toBeInTheDocument());
+  });
+
   it("loads chats and providers on launch without opening a repository", async () => {
     const api = bridge();
     render(<App api={api} />);
