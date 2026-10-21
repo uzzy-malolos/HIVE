@@ -44,6 +44,8 @@ jobs:
     # Ubuntu 24.04 blocks the unprivileged user namespaces Chromium's sandbox needs.
     - name: Allow Electron sandbox
       run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+    # The desktop shell tests import the core build from dist/.
+    - run: npm run build
     - run: npm run test:desktop
     # The release hardening test reads the generated preload, so generate it first.
     - run: npm run desktop:assets
