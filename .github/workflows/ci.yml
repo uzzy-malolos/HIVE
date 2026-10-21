@@ -5,6 +5,14 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   core:
@@ -20,6 +28,36 @@ jobs:
     - run: npm run lint
     - run: npm run build
     - run: npm test
+    - run: npm run web:build
+    - run: npm run web:test
+
+  linux-desktop:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Use Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22.12.0'
+        cache: npm
+    - run: npm ci
+    # Ubuntu 24.04 blocks the unprivileged user namespaces Chromium's sandbox needs.
+    - name: Allow Electron sandbox
+      run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+    - run: npm run test:desktop
+    # The release hardening test reads the generated preload, so generate it first.
+    - run: npm run desktop:assets
+    - run: npm run test:desktop-release
+    - name: Desktop e2e (headless)
+      run: xvfb-run -a npm run desktop:e2e
+    - uses: actions/upload-artifact@v4
+      if: failure()
+      with:
+        name: linux-desktop-e2e-failures
+        path: |
+          playwright-report/
+          test-results/
+        if-no-files-found: ignore
 
   windows-desktop:
     runs-on: windows-latest
@@ -34,6 +72,8 @@ jobs:
     - run: npm run lint
     - run: npm test
     - run: npm run test:desktop
+    # The release hardening test reads the generated preload, so generate it first.
+    - run: npm run desktop:assets
     - run: npm run test:desktop-release
     - run: npm run desktop:e2e
     - run: npm run desktop:pack
