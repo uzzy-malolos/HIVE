@@ -308,7 +308,10 @@ export async function forkCodingSession(repositoryPath: string, sourceId: string
       await assertOwnedDirectory(target, created.identity);
       await writeOwnedFile(targetIndex, captured.index, true, undefined, guard);
       await created.shareDependencies();
-      const [sourceAfter, copied] = await Promise.all([snapshot(source.repository.worktreePath, options.signal), snapshot(target, options.signal)]);
+      // Sequential: each snapshot runs eight git calls on the shared signal, and two at once
+      // exceed Node's default ten abort listeners (a MaxListenersExceededWarning on Node 22.12).
+      const sourceAfter = await snapshot(source.repository.worktreePath, options.signal);
+      const copied = await snapshot(target, options.signal);
       if (sourceAfter.signature !== captured.signature) throw new Error("Source workspace changed while forking; no fork was saved.");
       if (copied.signature !== captured.signature) throw new Error("Fork did not reproduce the source workspace and index exactly; no fork was saved.");
       const [sourceIdentity, forkIdentity] = await Promise.all([
