@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { closeDesktop, launchDesktop } from "./electron-launch";
+import { HiveDesktopPage } from "./hive-desktop.page";
 
 const exec = promisify(execFile);
 
@@ -68,6 +69,7 @@ test.describe.serial("HIVE desktop sidebar", () => {
     await sidebar.getByRole("button", { name: "Account and settings" }).click();
     await page.getByRole("menuitem", { name: "Archived chats" }).click();
     const archived = page.getByRole("dialog", { name: "Archived chats" });
+    await new HiveDesktopPage(page).expectTitlebarCovered();
     await archived.getByRole("button", { name: "Restore Release notes" }).click();
     await expect(archived.getByText("No archived chats in this project.")).toBeVisible();
     await archived.getByRole("button", { name: "Close" }).click();

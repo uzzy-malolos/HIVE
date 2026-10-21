@@ -112,7 +112,18 @@ export class HiveDesktopPage {
     await this.inspector.getByRole("button", { name: `Preview ${action}` }).click();
     const dialog = this.page.getByRole("dialog", { name: `Confirm ${action}` });
     await expect(dialog).toBeVisible();
+    await this.expectTitlebarCovered();
     await dialog.getByRole("button", { name: `Confirm ${action}` }).click();
+  }
+
+  /** While a modal dialog is open, its backdrop must sit over the titlebar so titlebar buttons can't be clicked. */
+  async expectTitlebarCovered(): Promise<void> {
+    const hit = await this.page.getByRole("banner").getByRole("button", { name: "Open settings" }).evaluate((button) => {
+      const box = button.getBoundingClientRect();
+      const top = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+      return top?.closest(".hive-titlebar") ? "titlebar" : top?.closest(".modal-backdrop") ? "backdrop" : String(top?.className);
+    });
+    expect(hit).toBe("backdrop");
   }
 }
 
