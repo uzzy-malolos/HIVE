@@ -1081,7 +1081,8 @@ label {
 
 .modal-backdrop {
   position: fixed;
-  z-index: 50;
+  /* Above the titlebar (z-index 100) so it dims and blocks titlebar controls while a dialog is open. */
+  z-index: 110;
   inset: 0;
   display: grid;
   place-items: center;
@@ -1101,6 +1102,7 @@ label {
 .modal-backdrop:has(.settings-modal) {
   /* Full-page settings sits below the titlebar, which stacks above modals and would hide Done and Back. */
   top: var(--hive-titlebar-height);
+  z-index: 50;
   padding: 0;
   place-items: stretch;
   background: var(--void);
